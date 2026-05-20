@@ -7,6 +7,7 @@ const AUTHORS_KEY = "topic_authors";
 
 // WordPress.com OAuth config -- replace CLIENT_ID with your actual Client ID from developer.wordpress.com
 const WPCOM_CLIENT_ID = "139851";
+const WPCOM_BLOG_ID = "216018568";
 const WPCOM_REDIRECT_URI = typeof window !== "undefined" ? window.location.origin : "";
 
 function timeAgo(dateStr) {
@@ -765,4 +766,3 @@ export default function App() {
     </div>
   );
 }
- 
