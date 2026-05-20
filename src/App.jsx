@@ -206,7 +206,7 @@ export default function App() {
     try {
       const fetchBatch = async (count) => {
         const prompt = `Simulate ${count} realistic recent tweets from @${account.handle} about "${account.topic}". Each under 280 characters, varied topics. Return ONLY a raw JSON array, no markdown. Format: [{"text":"tweet","date":"May 15, 2026","tweetId":"19-digit-id"}]`;
-        const r = await fetch("https://api.anthropic.com/v1/messages", {
+        const r = await fetch("/api/anthropic", {
           method: "POST", headers: { "Content-Type": "application/json", "x-api-key": import.meta.env.VITE_ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
           body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 2500, messages: [{ role: "user", content: prompt }] })
         });
@@ -255,7 +255,7 @@ export default function App() {
         const tweet = selectedTweets[i];
         try {
           const prompt = `Write a complete editorial article based on this tweet from @${account.handle} about "${account.topic}":\n\nTweet: "${tweet.text}"\nDate: ${tweet.date}\n\nInclude background, analysis, what it means for fans. Plus generate Yoast SEO fields.\n\nReturn ONLY JSON, no markdown:\n{"article":{"headline":"","subheadline":"","body":"4+ paragraphs with ## subheadings, \\n\\n between paragraphs"},"yoast":{"focusKeyphrase":"2-4 words","seoTitle":"under 60 chars","metaDescription":"under 155 chars with CTA","slug":"url-friendly-slug"}}`;
-          const r = await fetch("https://api.anthropic.com/v1/messages", {
+          const r = await fetch("/api/anthropic", {
             method: "POST", headers: { "Content-Type": "application/json", "x-api-key": import.meta.env.VITE_ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
             body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 2500, messages: [{ role: "user", content: prompt }] })
           });
