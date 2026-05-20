@@ -169,7 +169,7 @@ export default function App() {
   };
 
   const connectWordPressCom = () => {
-    const authUrl = `https://public-api.wordpress.com/oauth2/authorize?client_id=${WPCOM_CLIENT_ID}&redirect_uri=${encodeURIComponent(WPCOM_REDIRECT_URI)}&response_type=token&scope=global&blog=thedisneyscoop.com`;
+    const authUrl = `https://public-api.wordpress.com/oauth2/authorize?client_id=${WPCOM_CLIENT_ID}&redirect_uri=${encodeURIComponent(WPCOM_REDIRECT_URI)}&response_type=token&scope=global`;
     window.location.href = authUrl;
   };
 
@@ -765,5 +765,4 @@ export default function App() {
       )}
     </div>
   );
-} 
-// forced rebuild 
+}
