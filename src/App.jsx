@@ -67,6 +67,9 @@ export default function App() {
   const [accounts, setAccounts] = useState([]);
   const [newHandle, setNewHandle] = useState("");
   const [newTopic, setNewTopic] = useState("");
+  const [newRssUrl, setNewRssUrl] = useState("");
+  const [manualTweetText, setManualTweetText] = useState("");
+  const [showManualInput, setShowManualInput] = useState(null); // account.id
   const [activeTab, setActiveTab] = useState("accounts");
   const [activeArticle, setActiveArticle] = useState(null);
   const [loadingId, setLoadingId] = useState(null);
@@ -185,8 +188,8 @@ export default function App() {
     const handle = newHandle.replace(/^@/, "").trim();
     if (!handle) return;
     if (accounts.find(a => a.handle.toLowerCase() === handle.toLowerCase())) { setError("Account already added."); return; }
-    saveAccounts([...accounts, { id: Date.now(), handle, topic: newTopic.trim() || "general news", lastChecked: null, usedTweetIds: [], queue: [] }]);
-    setNewHandle(""); setNewTopic(""); setShowAddForm(false); setError("");
+    saveAccounts([...accounts, { id: Date.now(), handle, topic: newTopic.trim() || "general news", rssUrl: newRssUrl.trim(), lastChecked: null, usedTweetIds: [], queue: [] }]);
+    setNewHandle(""); setNewTopic(""); setNewRssUrl(""); setShowAddForm(false); setError("");
   };
 
   const removeAccount = (id) => {
@@ -203,40 +206,71 @@ export default function App() {
 
   // STEP 1: Fetch tweets only (no article generation yet)
   const fetchTweetsForSelection = async (account) => {
+    if (!account.rssUrl) {
+      setError("This account has no RSS feed URL. Edit the account to add one or use Manual Paste.");
+      return;
+    }
     setFetchingTweetsFor(account.id); setError("");
     const usedTweetIds = account.usedTweetIds || [];
 
     try {
-      const fetchBatch = async (count) => {
-        const prompt = `Simulate ${count} realistic recent tweets from @${account.handle} about "${account.topic}". Each under 280 characters, varied topics. Return ONLY a raw JSON array, no markdown. Format: [{"text":"tweet","date":"May 15, 2026","tweetId":"19-digit-id"}]`;
-        const r = await fetch("/api/anthropic", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model: "claude-sonnet-4-5", max_tokens: 2500, messages: [{ role: "user", content: prompt }] })
-        });
-        const d = await r.json();
-        if (d.error) throw new Error(d.error.message);
-        const raw = d.content?.find(b => b.type === "text")?.text || "";
-        const clean = raw.replace(/```json|```/g, "").trim();
-        const m = clean.match(/\[[\s\S]*\]/);
-        if (!m) {
-          const objs = clean.match(/\{[^{}]*"text"[^{}]*\}/g);
-          return objs ? objs.map(s => { try { return JSON.parse(s); } catch { return null; } }).filter(Boolean) : [];
-        }
-        try { return JSON.parse(m[0]); } catch { return []; }
-      };
+      // Fetch RSS feed via a CORS proxy
+      const proxyUrl = `/api/rss?url=${encodeURIComponent(account.rssUrl)}`;
+      const res = await fetch(proxyUrl);
+      if (!res.ok) throw new Error(`RSS fetch failed (${res.status})`);
+      const rssText = await res.text();
 
-      // Fetch in 3 batches of 10 to get 30 tweets reliably
-      const [b1, b2, b3] = await Promise.all([fetchBatch(10), fetchBatch(10), fetchBatch(10)]);
-      const allTweets = [...b1, ...b2, ...b3];
+      // Parse RSS/XML
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(rssText, "text/xml");
+      const items = Array.from(doc.querySelectorAll("item, entry"));
+
+      if (items.length === 0) throw new Error("No tweets found in RSS feed");
+
+      const allTweets = items.slice(0, 30).map((item, idx) => {
+        const title = item.querySelector("title")?.textContent || "";
+        const description = item.querySelector("description, content, summary")?.textContent || "";
+        const link = item.querySelector("link")?.textContent || item.querySelector("link")?.getAttribute("href") || "";
+        const pubDate = item.querySelector("pubDate, published, updated")?.textContent || "";
+        const guid = item.querySelector("guid, id")?.textContent || link || `${account.id}-${idx}`;
+
+        // Extract tweet ID from URL if present
+        const idMatch = link.match(/status\/(\d+)/);
+        const tweetId = idMatch ? idMatch[1] : guid.replace(/[^0-9]/g, "").substring(0, 19) || `${Date.now()}${idx}`;
+
+        // Strip HTML from description and use as tweet text
+        const tmp = document.createElement("div");
+        tmp.innerHTML = description || title;
+        const text = (tmp.textContent || tmp.innerText || title).trim().substring(0, 500);
+
+        const date = pubDate ? new Date(pubDate).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }) : "Recent";
+
+        return { text, date, tweetId, link };
+      });
+
       const newTweets = allTweets.filter(t => !usedTweetIds.includes(t.tweetId));
 
-      if (newTweets.length === 0) { setError("No new tweets found."); setFetchingTweetsFor(null); return; }
+      if (newTweets.length === 0) { setError("No new tweets found since last check."); setFetchingTweetsFor(null); return; }
       setTweetSelection({ account, tweets: newTweets, selectedIds: new Set() });
     } catch (e) {
-      setError(`Failed: ${e.message}`);
+      setError(`Failed to fetch RSS: ${e.message}`);
     } finally {
       setFetchingTweetsFor(null);
     }
+  };
+
+  // Manual tweet entry -- creates a single tweet from pasted text
+  const submitManualTweet = async (account) => {
+    if (!manualTweetText.trim()) return;
+    const manualTweet = {
+      text: manualTweetText.trim(),
+      date: new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }),
+      tweetId: `manual-${Date.now()}`,
+      link: ""
+    };
+    setTweetSelection({ account, tweets: [manualTweet], selectedIds: new Set([manualTweet.tweetId]) });
+    setManualTweetText("");
+    setShowManualInput(null);
   };
 
   // STEP 2: Generate articles only for selected tweets
@@ -586,6 +620,8 @@ export default function App() {
                   <input value={newHandle} onChange={e => setNewHandle(e.target.value)} placeholder="@handle" style={inputStyle} />
                   <label style={labelStyle}>Topic Focus</label>
                   <input value={newTopic} onChange={e => setNewTopic(e.target.value)} placeholder="e.g. Disney Parks news" style={{ ...inputStyle, marginBottom: "8px" }} />
+                  <label style={labelStyle}>RSS Feed URL (from rss.app)</label>
+                  <input value={newRssUrl} onChange={e => setNewRssUrl(e.target.value)} placeholder="https://rss.app/feeds/xxxxx.xml" style={{ ...inputStyle, marginBottom: "8px" }} />
                   {newTopic && resolveAuthor(newTopic, topicAuthors) && <p style={{ fontSize: "0.72rem", color: "#2e7d32", fontFamily: "'Source Serif 4', serif", marginBottom: "10px", display: "flex", alignItems: "center", gap: "4px" }}><Icons.Check /> Author: <strong>{resolveAuthor(newTopic, topicAuthors)}</strong></p>}
                   <button onClick={addAccount} style={{ width: "100%", padding: "12px", background: "#f5c842", border: "1.5px solid #1a1a2e", borderRadius: "6px", cursor: "pointer", fontFamily: "'Playfair Display', serif", fontWeight: 700, fontSize: "0.9rem", color: "#1a1a2e" }}>Add Account</button>
                   {error && <p style={{ color: "#c0392b", fontSize: "0.75rem", marginTop: "6px" }}>{error}</p>}
@@ -616,10 +652,24 @@ export default function App() {
                           </div>
                           <button onClick={() => removeAccount(account.id)} style={{ background: "none", border: "none", cursor: "pointer", color: "#c8b99a", padding: "4px" }}><Icons.Trash /></button>
                         </div>
-                        <button onClick={() => fetchTweetsForSelection(account)} disabled={isFetching} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: "5px", padding: "10px", border: "1.5px solid #1a1a2e", borderRadius: "6px", cursor: isFetching ? "wait" : "pointer", background: "#1a1a2e", color: "#f5f0e8", fontFamily: "'Source Serif 4', serif", fontSize: "0.82rem", opacity: isFetching ? 0.6 : 1 }}>
-                          <Icons.Refresh spinning={isFetching} />
-                          {isFetching ? "Fetching 30 tweets..." : "Get 30 Recent Tweets"}
-                        </button>
+                        <div style={{ display: "flex", gap: "6px" }}>
+                          <button onClick={() => fetchTweetsForSelection(account)} disabled={isFetching} style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "5px", padding: "10px", border: "1.5px solid #1a1a2e", borderRadius: "6px", cursor: isFetching ? "wait" : "pointer", background: "#1a1a2e", color: "#f5f0e8", fontFamily: "'Source Serif 4', serif", fontSize: "0.82rem", opacity: isFetching ? 0.6 : 1 }}>
+                            <Icons.Refresh spinning={isFetching} />
+                            {isFetching ? "Fetching..." : "Fetch RSS Tweets"}
+                          </button>
+                          <button onClick={() => setShowManualInput(showManualInput === account.id ? null : account.id)} style={{ padding: "10px 12px", border: "1.5px solid #c8a84b", borderRadius: "6px", cursor: "pointer", background: showManualInput === account.id ? "#f5c842" : "transparent", color: "#6b5a3e", fontFamily: "'Source Serif 4', serif", fontSize: "0.82rem" }} title="Manual paste">
+                            ✍
+                          </button>
+                        </div>
+                        {showManualInput === account.id && (
+                          <div style={{ marginTop: "10px", padding: "10px", background: "#fff8e1", borderRadius: "6px", border: "1px solid #f5c842" }}>
+                            <label style={labelStyle}>Paste Tweet Text</label>
+                            <textarea value={manualTweetText} onChange={e => setManualTweetText(e.target.value)} placeholder="Paste tweet content here..." rows={3} style={{ ...inputStyle, marginBottom: "8px", resize: "vertical", fontFamily: "'Source Serif 4', serif" }} />
+                            <button onClick={() => submitManualTweet(account)} disabled={!manualTweetText.trim()} style={{ width: "100%", padding: "9px", background: "#f5c842", border: "1.5px solid #1a1a2e", borderRadius: "6px", cursor: "pointer", fontFamily: "'Source Serif 4', serif", fontSize: "0.8rem", color: "#1a1a2e", fontWeight: 600, opacity: !manualTweetText.trim() ? 0.5 : 1 }}>
+                              Generate Article from Tweet
+                            </button>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -768,4 +818,3 @@ export default function App() {
     </div>
   );
 }
-// deploy 2026-05-20
