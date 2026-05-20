@@ -208,7 +208,7 @@ export default function App() {
         const prompt = `Simulate ${count} realistic recent tweets from @${account.handle} about "${account.topic}". Each under 280 characters, varied topics. Return ONLY a raw JSON array, no markdown. Format: [{"text":"tweet","date":"May 15, 2026","tweetId":"19-digit-id"}]`;
         const r = await fetch("/api/anthropic", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 2500, messages: [{ role: "user", content: prompt }] })
+          body: JSON.stringify({ model: "claude-sonnet-4-5", max_tokens: 2500, messages: [{ role: "user", content: prompt }] })
         });
         const d = await r.json();
         if (d.error) throw new Error(d.error.message);
@@ -257,7 +257,7 @@ export default function App() {
           const prompt = `Write a complete editorial article based on this tweet from @${account.handle} about "${account.topic}":\n\nTweet: "${tweet.text}"\nDate: ${tweet.date}\n\nInclude background, analysis, what it means for fans. Plus generate Yoast SEO fields.\n\nReturn ONLY JSON, no markdown:\n{"article":{"headline":"","subheadline":"","body":"4+ paragraphs with ## subheadings, \\n\\n between paragraphs"},"yoast":{"focusKeyphrase":"2-4 words","seoTitle":"under 60 chars","metaDescription":"under 155 chars with CTA","slug":"url-friendly-slug"}}`;
           const r = await fetch("/api/anthropic", {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 2500, messages: [{ role: "user", content: prompt }] })
+            body: JSON.stringify({ model: "claude-sonnet-4-5", max_tokens: 2500, messages: [{ role: "user", content: prompt }] })
           });
           const d = await r.json();
           if (d.error) throw new Error(d.error.message);
