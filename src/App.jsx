@@ -127,7 +127,9 @@ export default function App() {
     if (typeof window !== "undefined" && window.location.hash.includes("access_token")) {
       const params = new URLSearchParams(window.location.hash.substring(1));
       const token = params.get("access_token");
-      const blogId = params.get("blog_id");
+      let blogId = params.get("blog_id") || params.get("site_id");
+      // Fallback to hardcoded site ID if missing or zero
+      if (!blogId || blogId === "0") blogId = WPCOM_BLOG_ID;
       if (token && blogId) {
         const newSettings = { token, blogId, user: "", method: "wpcom" };
         setWpcomToken(token); setWpcomBlogId(blogId); setPublishMethod("wpcom");
@@ -765,4 +767,4 @@ export default function App() {
       )}
     </div>
   );
-} 
+}
