@@ -70,6 +70,8 @@ export default function App() {
   const [newRssUrl, setNewRssUrl] = useState("");
   const [manualTweetText, setManualTweetText] = useState("");
   const [showManualInput, setShowManualInput] = useState(null); // account.id
+  const [editPrompt, setEditPrompt] = useState("");
+  const [editingArticle, setEditingArticle] = useState(false);
   const [activeTab, setActiveTab] = useState("accounts");
   const [activeArticle, setActiveArticle] = useState(null);
   const [loadingId, setLoadingId] = useState(null);
@@ -291,14 +293,16 @@ export default function App() {
         setGeneratingProgress({ current: i + 1, total: selectedTweets.length });
         const tweet = selectedTweets[i];
         try {
-          const prompt = `Write a complete editorial article based on this tweet from @${account.handle} about "${account.topic}":\n\nTweet: "${tweet.text}"\nDate: ${tweet.date}\n\nInclude background, analysis, what it means for fans. Plus generate Yoast SEO fields.\n\nReturn ONLY JSON, no markdown:\n{"article":{"headline":"","subheadline":"","body":"4+ paragraphs with ## subheadings, \\n\\n between paragraphs"},"yoast":{"focusKeyphrase":"2-4 words","seoTitle":"under 60 chars","metaDescription":"under 155 chars with CTA","slug":"url-friendly-slug"}}`;
+          const prompt = `Write a complete editorial article based on this tweet from @${account.handle} about "${account.topic}":\n\nTweet: "${tweet.text}"\nDate: ${tweet.date}\n\nFirst, use web search to verify the facts and find current, accurate information related to this tweet. Then write the article using verified information. Include background, analysis, and what it means for fans. Plus generate Yoast SEO fields.\n\nReturn ONLY JSON, no markdown:\n{"article":{"headline":"","subheadline":"","body":"4+ paragraphs with ## subheadings, \\n\\n between paragraphs"},"yoast":{"focusKeyphrase":"2-4 words","seoTitle":"under 60 chars","metaDescription":"under 155 chars with CTA","slug":"url-friendly-slug"}}`;
           const r = await fetch("/api/anthropic", {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ model: "claude-sonnet-4-5", max_tokens: 2500, messages: [{ role: "user", content: prompt }] })
+            body: JSON.stringify({ model: "claude-sonnet-4-5", max_tokens: 4000, tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }], messages: [{ role: "user", content: prompt }] })
           });
           const d = await r.json();
           if (d.error) throw new Error(d.error.message);
-          const raw = d.content?.find(b => b.type === "text")?.text || "";
+          // Find the final text block (after any tool use)
+          const textBlocks = d.content?.filter(b => b.type === "text") || [];
+          const raw = textBlocks.map(b => b.text).join("\n");
           const m = raw.match(/\{[\s\S]*\}/);
           if (!m) continue;
           const parsed = JSON.parse(m[0]);
@@ -421,6 +425,42 @@ export default function App() {
       }
     } catch { setPublishStatus({ type: "error", message: "Could not reach WordPress." }); }
     finally { setPublishingId(null); }
+  };
+
+  // Edit article via chat prompt
+  const editArticleWithPrompt = async () => {
+    if (!activeArticle || !editPrompt.trim()) return;
+    setEditingArticle(true);
+    try {
+      const prompt = `Here is the current article:\n\nHeadline: ${activeArticle.article.headline}\nSubheadline: ${activeArticle.article.subheadline}\nBody:\n${activeArticle.article.body}\n\nCurrent Yoast SEO fields:\nFocus Keyphrase: ${activeArticle.yoast?.focusKeyphrase || ""}\nSEO Title: ${activeArticle.yoast?.seoTitle || ""}\nMeta Description: ${activeArticle.yoast?.metaDescription || ""}\nSlug: ${activeArticle.yoast?.slug || ""}\n\nUser request: ${editPrompt}\n\nUse web search if you need current information. Then rewrite the article based on the user's request. Update Yoast SEO fields if relevant.\n\nReturn ONLY JSON, no markdown:\n{"article":{"headline":"","subheadline":"","body":"4+ paragraphs with ## subheadings, \\n\\n between paragraphs"},"yoast":{"focusKeyphrase":"","seoTitle":"","metaDescription":"","slug":""}}`;
+
+      const r = await fetch("/api/anthropic", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "claude-sonnet-4-5", max_tokens: 4000, tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }], messages: [{ role: "user", content: prompt }] })
+      });
+      const d = await r.json();
+      if (d.error) throw new Error(d.error.message);
+      const textBlocks = d.content?.filter(b => b.type === "text") || [];
+      const raw = textBlocks.map(b => b.text).join("\n");
+      const m = raw.match(/\{[\s\S]*\}/);
+      if (!m) throw new Error("Could not parse response");
+      const parsed = JSON.parse(m[0]);
+
+      const updatedArticle = { ...activeArticle, article: parsed.article, yoast: parsed.yoast };
+      setActiveArticle(updatedArticle);
+
+      // Update in queue too
+      const updatedAccounts = accounts.map(a => ({
+        ...a,
+        queue: (a.queue || []).map(item => item.id === activeArticle.id ? updatedArticle : item)
+      }));
+      saveAccounts(updatedAccounts);
+      setEditPrompt("");
+    } catch (e) {
+      setError(`Edit failed: ${e.message}`);
+    } finally {
+      setEditingArticle(false);
+    }
   };
 
   const publishToWordPress = (articleData) => {
@@ -580,6 +620,16 @@ export default function App() {
             <p style={{ fontFamily: "'Source Serif 4', serif", fontSize: "0.95rem", fontStyle: "italic", color: "#6b5a3e", marginBottom: "1.2rem", lineHeight: 1.5 }}>{activeArticle.article.subheadline}</p>
             <hr style={{ border: "none", borderTop: "1px solid #c8b99a", marginBottom: "1.2rem" }} />
             <div>{renderArticleBody(activeArticle.article.body)}</div>
+          </div>
+
+          {/* Chat-edit box */}
+          <div style={{ marginBottom: "1.25rem", padding: "0.9rem 1rem", background: "#f5f0e8", borderRadius: "8px", border: "1.5px solid #c8a84b" }}>
+            <label style={{ ...labelStyle, color: "#6b5a3e" }}>Edit Article with Claude</label>
+            <textarea value={editPrompt} onChange={e => setEditPrompt(e.target.value)} placeholder="e.g. 'Change the focus to annual passholders' or 'Look up the current ticket price and add it'" rows={2} style={{ ...inputStyle, marginBottom: "8px", resize: "vertical", fontFamily: "'Source Serif 4', serif" }} />
+            <button onClick={editArticleWithPrompt} disabled={!editPrompt.trim() || editingArticle} style={{ width: "100%", padding: "10px", background: "#c8a84b", border: "1.5px solid #1a1a2e", borderRadius: "6px", cursor: editingArticle ? "wait" : "pointer", fontFamily: "'Source Serif 4', serif", fontSize: "0.85rem", color: "#1a1a2e", fontWeight: 600, opacity: (!editPrompt.trim() || editingArticle) ? 0.5 : 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}>
+              <Icons.Refresh spinning={editingArticle} />
+              {editingArticle ? "Rewriting with web search..." : "Apply Changes"}
+            </button>
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginBottom: "1rem" }}>
@@ -817,4 +867,4 @@ export default function App() {
       )}
     </div>
   );
-} 
+}
