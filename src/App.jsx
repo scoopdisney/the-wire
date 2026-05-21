@@ -564,7 +564,7 @@ export default function App() {
               const selected = tweetSelection.selectedIds.has(t.tweetId);
               return (
                 <div key={t.tweetId} className="tweet-card" onClick={() => toggleTweetSelection(t.tweetId)}
-                  style={{ padding: "0.85rem 1rem", background: selected ? "#fff8e1" : t.alreadyUsed ? "#ede8dc" : "#f0ead8", borderRadius: "8px", border: `1.5px solid ${selected ? "#c8a84b" : t.alreadyUsed ? "#a0946e" : "#c8b99a"}`, cursor: "pointer", display: "flex", gap: "10px", alignItems: "flex-start", transition: "all 0.15s", opacity: t.alreadyUsed && !selected ? 0.7 : 1 }}>
+                  style={{ padding: "0.85rem 1rem", background: selected ? "#dbeaf4" : t.alreadyUsed ? "#a8cee0" : "#b8d8e8", borderRadius: "8px", border: `1.5px solid ${selected ? "#0a2540" : t.alreadyUsed ? "#5a8ba8" : "#7eb5d0"}`, cursor: "pointer", display: "flex", gap: "10px", alignItems: "flex-start", transition: "all 0.15s", opacity: t.alreadyUsed && !selected ? 0.7 : 1 }}>
                   <span style={{ color: selected ? "#c8a84b" : "#c8b99a", flexShrink: 0, marginTop: "1px" }}>
                     <Icons.CheckBox checked={selected} />
                   </span>
@@ -620,7 +620,7 @@ export default function App() {
 
           <div style={{ display: "flex", gap: "6px", marginBottom: "1rem", flexWrap: "wrap" }}>
             {activeArticle.assignedAuthor && <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", padding: "3px 9px", background: "#e8f5e9", border: "1px solid #a8dba8", borderRadius: "20px", fontSize: "0.78rem", color: "#2e7d32", fontFamily: "'Lora', serif" }}><Icons.User /> {activeArticle.assignedAuthor}</span>}
-            <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", padding: "3px 9px", background: "#fff8e1", border: "1px solid #f5c842", borderRadius: "20px", fontSize: "0.78rem", color: "#8a6a00", fontFamily: "'Lora', serif" }}><Icons.Tag /> {activeArticle.topic}</span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", padding: "3px 9px", background: "#dbeaf4", border: "1px solid #0a2540", borderRadius: "20px", fontSize: "0.78rem", color: "#0a2540", fontFamily: "'Lora', serif" }}><Icons.Tag /> {activeArticle.topic}</span>
           </div>
 
           {activeArticle.yoast && (
@@ -738,7 +738,7 @@ export default function App() {
                           </button>
                         </div>
                         {showManualInput === account.id && (
-                          <div style={{ marginTop: "10px", padding: "10px", background: "#fff8e1", borderRadius: "6px", border: "1px solid #f5c842" }}>
+                          <div style={{ marginTop: "10px", padding: "10px", background: "#dbeaf4", borderRadius: "6px", border: "1px solid #0a2540" }}>
                             <label style={labelStyle}>Paste Tweet Text</label>
                             <textarea value={manualTweetText} onChange={e => setManualTweetText(e.target.value)} placeholder="Paste tweet content here..." rows={3} style={{ ...inputStyle, marginBottom: "8px", resize: "vertical", fontFamily: "'Lora', serif" }} />
                             <button onClick={() => submitManualTweet(account)} disabled={!manualTweetText.trim()} style={{ width: "100%", padding: "9px", background: "#f5c842", border: "1.5px solid #0a2540", borderRadius: "6px", cursor: "pointer", fontFamily: "'Lora', serif", fontSize: "0.9rem", color: "#0a2540", fontWeight: 600, opacity: !manualTweetText.trim() ? 0.5 : 1 }}>
