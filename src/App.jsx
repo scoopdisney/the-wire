@@ -168,6 +168,8 @@ export default function App() {
     }
   }, []);
 
+  const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
   const saveAccounts = (accs) => { setAccounts(accs); localStorage.setItem(STORAGE_KEY, JSON.stringify(accs)); };
   const saveTopicAuthors = (ta) => { setTopicAuthors(ta); localStorage.setItem(AUTHORS_KEY, JSON.stringify(ta)); };
 
@@ -318,7 +320,9 @@ export default function App() {
         const tweet = selectedTweets[i];
         let attempts = 0;
         let success = false;
-        while (attempts < 2 && !success) {
+        // Wait 3 seconds between each tweet to avoid rate limits
+        if (i > 0) await sleep(3000);
+        while (attempts < 4 && !success) {
           attempts++;
           try {
             const prompt = `Write a complete editorial article based on this tweet from @${account.handle} about "${account.topic}":\n\nTweet: "${tweet.text}"\nDate: ${tweet.date}\n\nFirst, use web search to verify the facts and find current, accurate information related to this tweet. Then write the article using verified information. Include background, analysis, and what it means for fans. Plus generate Yoast SEO fields. CRITICAL CONSTRAINTS:\n- Headline MUST be SEO-optimized AND under 60 characters (count them!). Include the focus keyphrase naturally.\n- SEO title MUST be under 60 characters.\n- Meta description MUST be under 155 characters with a clear CTA.\n- Do NOT include any HTML tags, citation markers like cite tags, or reference indices in the article body.\n- The body must be clean prose only with no XML or HTML.\n\nReturn ONLY JSON, no markdown:\n{"article":{"headline":"SEO headline under 60 chars","subheadline":"one sentence","body":"4+ paragraphs with ## subheadings, \\n\\n between paragraphs"},"yoast":{"focusKeyphrase":"2-4 words","seoTitle":"under 60 chars","metaDescription":"under 155 chars with CTA","slug":"url-friendly-slug"}}`;
@@ -326,6 +330,13 @@ export default function App() {
               method: "POST", headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ model: "claude-sonnet-4-5", max_tokens: 4000, tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 2 }], messages: [{ role: "user", content: prompt }] })
             });
+            if (r.status === 429) {
+              // Rate limited - wait progressively longer
+              const waitMs = attempts * 8000;
+              console.log(`Rate limited, waiting ${waitMs}ms before retry...`);
+              await sleep(waitMs);
+              throw new Error(`Rate limited (will retry)`);
+            }
             if (!r.ok) throw new Error(`HTTP ${r.status}`);
             const d = await r.json();
             if (d.error) throw new Error(d.error.message || JSON.stringify(d.error));
@@ -349,7 +360,7 @@ export default function App() {
             success = true;
           } catch (e) {
             console.error(`Tweet ${i + 1} attempt ${attempts} failed:`, e.message);
-            if (attempts >= 2) {
+            if (attempts >= 4) {
               failedCount++;
               failedReasons.push(`Tweet ${i + 1}: ${e.message}`);
             }
