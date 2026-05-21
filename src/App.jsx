@@ -64,10 +64,11 @@ const Icons = {
 };
 
 const inputStyle = { width: "100%", padding: "10px 12px", marginBottom: "12px", border: "1.5px solid #7eb5d0", borderRadius: "6px", fontFamily: "'Lora', serif", fontSize: "16px", background: "#fff", outline: "none", color: "#0a2540" };
-const labelStyle = { display: "block", fontSize: "0.8rem", textTransform: "uppercase", letterSpacing: "0.1em", color: "#3d6b85", fontFamily: "'Lora', serif", marginBottom: "5px", fontWeight: 600 };
+const labelStyle = { display: "block", fontSize: "0.8rem", textTransform: "uppercase", letterSpacing: "0.1em", color: "#0a2540", fontFamily: "'Lora', serif", marginBottom: "5px", fontWeight: 700 };
 
 const NAV_TABS = [
   { id: "accounts", label: "Accounts", icon: "Newsletter" },
+  { id: "quick", label: "Quick", icon: "Plus" },
   { id: "queue", label: "Queue", icon: "Queue" },
   { id: "authors", label: "Authors", icon: "User" },
   { id: "wordpress", label: "WP", icon: "Settings" },
@@ -79,6 +80,10 @@ export default function App() {
   const [newTopic, setNewTopic] = useState("");
   const [newRssUrl, setNewRssUrl] = useState("");
   const [manualTweetText, setManualTweetText] = useState("");
+  const [quickTweetText, setQuickTweetText] = useState("");
+  const [quickTopic, setQuickTopic] = useState("");
+  const [quickHandle, setQuickHandle] = useState("");
+  const [generatingQuick, setGeneratingQuick] = useState(false);
   const [showManualInput, setShowManualInput] = useState(null); // account.id
   const [editPrompt, setEditPrompt] = useState("");
   const [editingArticle, setEditingArticle] = useState(false);
@@ -209,7 +214,12 @@ export default function App() {
     if (activeArticle?.accountId === id) setActiveArticle(null);
   };
 
-  const addTopicAuthor = () => {
+  const clearTweetHistory = (accountId) => {
+    const updated = accounts.map(a => a.id === accountId ? { ...a, usedTweetIds: [] } : a);
+    saveAccounts(updated);
+  };
+
+    const addTopicAuthor = () => {
     const kw = newKeyword.trim(); const au = newAuthor.trim();
     if (!kw || !au) return;
     saveTopicAuthors([...topicAuthors, { id: Date.now(), keyword: kw, author: au }]);
@@ -239,7 +249,7 @@ export default function App() {
 
       if (items.length === 0) throw new Error("No tweets found in RSS feed");
 
-      const allTweets = items.slice(0, 30).map((item, idx) => {
+      const allTweets = items.slice(0, 40).map((item, idx) => {
         const title = item.querySelector("title")?.textContent || "";
         const description = item.querySelector("description, content, summary")?.textContent || "";
         const link = item.querySelector("link")?.textContent || item.querySelector("link")?.getAttribute("href") || "";
@@ -442,7 +452,103 @@ export default function App() {
     finally { setPublishingId(null); }
   };
 
-  // Edit article via chat prompt
+  // Quick standalone article from pasted tweet (not tied to an account)
+  const generateQuickArticle = async () => {
+    if (!quickTweetText.trim() || !quickTopic.trim()) {
+      setError("Please provide tweet content or URL, and a topic.");
+      return;
+    }
+    setGeneratingQuick(true);
+    setError("");
+    const assignedAuthor = resolveAuthor(quickTopic, topicAuthors);
+
+    // Detect if input is a tweet URL and try to fetch its text
+    let tweetText = quickTweetText.trim();
+    let detectedHandle = quickHandle.replace(/^@/, "").trim();
+    let tweetLink = "";
+    let tweetId = `quick-${Date.now()}`;
+
+    const urlMatch = tweetText.match(/^https?:\/\/(?:twitter\.com|x\.com)\/([^\/]+)\/status\/(\d+)/i);
+    if (urlMatch) {
+      tweetLink = tweetText;
+      const urlHandle = urlMatch[1];
+      tweetId = urlMatch[2];
+      if (!detectedHandle) detectedHandle = urlHandle;
+      try {
+        // Use Twitter oEmbed via proxy
+        const oembedUrl = `https://publish.twitter.com/oembed?url=${encodeURIComponent(tweetLink)}&omit_script=true`;
+        const proxyUrl = `/api/rss?url=${encodeURIComponent(oembedUrl)}`;
+        const res = await fetch(proxyUrl);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.html) {
+            // Strip HTML and extract just the tweet text
+            const tmp = document.createElement("div");
+            tmp.innerHTML = data.html;
+            // Tweet text is usually in the first <p> tag
+            const p = tmp.querySelector("p");
+            tweetText = p ? (p.textContent || p.innerText).trim() : tmp.textContent.trim();
+            // Remove the trailing "— Author Name (@handle) Date" line
+            tweetText = tweetText.replace(/\s*[—–-]\s*[^()]+\(@[^)]+\)\s*[\w\s,]+\d{4}\s*$/i, "").trim();
+          }
+        }
+      } catch (e) {
+        console.error("Failed to fetch tweet text:", e);
+        setError("Could not fetch tweet from URL. You can paste the tweet text directly instead.");
+        setGeneratingQuick(false);
+        return;
+      }
+    }
+
+    const tweet = {
+      text: tweetText,
+      date: new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }),
+      tweetId,
+      link: tweetLink
+    };
+    try {
+      const handle = detectedHandle || "Source";
+      const prompt = `Write a complete editorial article based on this tweet from @${handle} about "${quickTopic}":\n\nTweet: "${tweet.text}"\nDate: ${tweet.date}\n\nFirst, use web search to verify the facts and find current, accurate information related to this tweet. Then write the article using verified information. Include background, analysis, and what it means for fans. Plus generate Yoast SEO fields. CRITICAL: Do NOT include any HTML tags, citation markers like cite tags, or reference indices in the article body. The body must be clean prose only with no XML or HTML.\n\nReturn ONLY JSON, no markdown:\n{"article":{"headline":"","subheadline":"","body":"4+ paragraphs with ## subheadings, \\n\\n between paragraphs"},"yoast":{"focusKeyphrase":"2-4 words","seoTitle":"under 60 chars","metaDescription":"under 155 chars with CTA","slug":"url-friendly-slug"}}`;
+
+      const r = await fetch("/api/anthropic", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "claude-sonnet-4-5", max_tokens: 4000, tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }], messages: [{ role: "user", content: prompt }] })
+      });
+      const d = await r.json();
+      if (d.error) throw new Error(d.error.message);
+      const textBlocks = d.content?.filter(b => b.type === "text") || [];
+      const raw = textBlocks.map(b => b.text).join("\n");
+      const m = raw.match(/\{[\s\S]*\}/);
+      if (!m) throw new Error("Could not parse response");
+      const parsed = JSON.parse(m[0]);
+      if (parsed.article?.body) {
+        parsed.article.body = parsed.article.body.replace(/<\/?cite[^>]*>/gi, "").replace(/[ \t]+/g, " ").replace(/ ([.,!?])/g, "$1").trim();
+      }
+
+      const articleId = `quick-${Date.now()}`;
+      const newArticle = { tweet, article: parsed.article, yoast: parsed.yoast, assignedAuthor, accountId: "quick", handle, topic: quickTopic, id: articleId };
+
+      // Add to a "quick" pseudo-account in the queue
+      let quickAccount = accounts.find(a => a.id === "quick");
+      if (!quickAccount) {
+        quickAccount = { id: "quick", handle: "Quick Articles", topic: "Quick", queue: [newArticle], usedTweetIds: [], lastChecked: null };
+        saveAccounts([...accounts, quickAccount]);
+      } else {
+        const updated = accounts.map(a => a.id === "quick" ? { ...a, queue: [...(a.queue || []), newArticle] } : a);
+        saveAccounts(updated);
+      }
+
+      // Clear form and show article
+      setQuickTweetText(""); setQuickTopic(""); setQuickHandle("");
+      setActiveArticle(newArticle);
+    } catch (e) {
+      setError(`Failed: ${e.message}`);
+    } finally {
+      setGeneratingQuick(false);
+    }
+  };
+
+    // Edit article via chat prompt
   const editArticleWithPrompt = async () => {
     if (!activeArticle || !editPrompt.trim()) return;
     setEditingArticle(true);
@@ -506,15 +612,15 @@ export default function App() {
   const stripTags = (text) => text.replace(/<\/?cite[^>]*>/gi, "").replace(/<[^>]+>/g, "").replace(/[ \t]+/g, " ").trim();
   const renderArticleBody = (body) => body.split("\n\n").map((block, i) => {
     const cleaned = stripTags(block.replace(/^## /, ""));
-    if (block.startsWith("## ")) return <h3 key={i} style={{ fontFamily: "'Poppins', sans-serif", fontSize: "1.15rem", fontWeight: 700, marginTop: "1.5rem", marginBottom: "0.4rem", color: "#0a2540" }}>{cleaned}</h3>;
+    if (block.startsWith("## ")) return <h3 key={i} style={{ fontFamily: "'Poppins', sans-serif", fontSize: "1.15rem", fontWeight: 800, marginTop: "1.5rem", marginBottom: "0.4rem", color: "#0a2540" }}>{cleaned}</h3>;
     return <p key={i} style={{ marginBottom: "0.9rem", lineHeight: 1.75, color: "#0a2540", fontSize: "1.02rem" }}>{cleaned}</p>;
   });
 
   return (
-    <div style={{ minHeight: "100vh", background: "#c4e0f0", fontFamily: "'Lora', serif", paddingBottom: "70px" }}>
+    <div style={{ minHeight: "100vh", background: "#F0F8FF", fontFamily: "'Lora', serif", paddingBottom: "70px" }}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700;800;900&family=Lora:ital,wght@0,400;0,500;0,600;1,400&display=swap');
-        * { box-sizing: border-box; margin: 0; padding: 0; }
+        @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700;800;900&family=Lora:ital,wght@0,400;0,500;0,600;0,700;1,400;1,600&display=swap');
+        * { box-sizing: border-box; margin: 0; padding: 0; font-weight: 500; }
         @keyframes spin { to { transform: rotate(360deg); } }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
         @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
@@ -525,24 +631,24 @@ export default function App() {
       `}</style>
 
       {/* Header */}
-      <header style={{ position: "sticky", top: 0, zIndex: 100, padding: "0.9rem 1.25rem", display: "flex", alignItems: "center", justifyContent: "space-between", background: "#0a2540", borderBottom: "2px solid #f5c842" }}>
+      <header style={{ position: "sticky", top: 0, zIndex: 100, padding: "0.9rem 1.25rem", display: "flex", alignItems: "center", justifyContent: "space-between", background: "#c4e0f0", borderBottom: "2px solid #0a2540" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
           {(activeArticle || tweetSelection) ? (
-            <button onClick={() => { setActiveArticle(null); setTweetSelection(null); setPublishStatus(null); }} style={{ background: "none", border: "none", cursor: "pointer", color: "#f5c842", padding: "2px", display: "flex" }}>
+            <button onClick={() => { setActiveArticle(null); setTweetSelection(null); setPublishStatus(null); }} style={{ background: "none", border: "none", cursor: "pointer", color: "#0a2540", padding: "2px", display: "flex" }}>
               <Icons.Back />
             </button>
           ) : (
-            <div style={{ color: "#f5c842" }}><Icons.Newsletter /></div>
+            <div style={{ color: "#0a2540" }}><Icons.Newsletter /></div>
           )}
           <div>
-            <h1 style={{ fontFamily: "'Poppins', sans-serif", fontSize: "1.45rem", fontWeight: 900, color: "#e8f4fc", letterSpacing: "-0.02em" }}>
+            <h1 style={{ fontFamily: "'Poppins', sans-serif", fontSize: "1.45rem", fontWeight: 900, color: "#0a2540", letterSpacing: "-0.02em" }}>
               {tweetSelection ? `Pick Tweets` : activeArticle ? activeArticle.article?.headline?.substring(0, 28) + "..." : "The Wire"}
             </h1>
-            {!activeArticle && !tweetSelection && <p style={{ fontSize: "0.72rem", color: "#5a8ba8", letterSpacing: "0.15em", textTransform: "uppercase", fontFamily: "'Lora', serif" }}>Tweet-to-Article Intelligence</p>}
+            {!activeArticle && !tweetSelection && <p style={{ fontSize: "0.72rem", color: "#0a2540", letterSpacing: "0.15em", textTransform: "uppercase", fontFamily: "'Lora', serif" }}>Tweet-to-Article Intelligence</p>}
           </div>
         </div>
         {!activeArticle && !tweetSelection && totalQueued > 0 && (
-          <span style={{ background: "#f5c842", color: "#0a2540", borderRadius: "12px", padding: "2px 9px", fontSize: "0.82rem", fontFamily: "'Poppins', sans-serif", fontWeight: 700 }}>{totalQueued} ready</span>
+          <span style={{ background: "#f5c842", color: "#0a2540", borderRadius: "12px", padding: "2px 9px", fontSize: "0.82rem", fontFamily: "'Poppins', sans-serif", fontWeight: 800 }}>{totalQueued} ready</span>
         )}
       </header>
 
@@ -551,8 +657,8 @@ export default function App() {
         <div style={{ padding: "1.25rem", animation: "slideUp 0.25s ease" }}>
           <div style={{ marginBottom: "1rem", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div>
-              <p style={{ fontFamily: "'Poppins', sans-serif", fontWeight: 700, fontSize: "1.05rem", color: "#0a2540" }}>@{tweetSelection.account.handle}</p>
-              <p style={{ fontSize: "0.82rem", color: "#3d6b85", fontFamily: "'Lora', serif" }}>{tweetSelection.tweets.length} new tweets · {tweetSelection.selectedIds.size} selected</p>
+              <p style={{ fontFamily: "'Poppins', sans-serif", fontWeight: 800, fontSize: "1.05rem", color: "#0a2540" }}>@{tweetSelection.account.handle}</p>
+              <p style={{ fontSize: "0.82rem", color: "#0a2540", fontFamily: "'Lora', serif" }}>{tweetSelection.tweets.length} new tweets · {tweetSelection.selectedIds.size} selected</p>
             </div>
             <button onClick={selectAllTweets} style={{ padding: "6px 12px", border: "1.5px solid #0a2540", borderRadius: "5px", background: "transparent", color: "#0a2540", fontFamily: "'Lora', serif", fontSize: "0.88rem", cursor: "pointer" }}>
               {tweetSelection.selectedIds.size === tweetSelection.tweets.length ? "Deselect All" : "Select All"}
@@ -571,8 +677,8 @@ export default function App() {
                   <div style={{ flex: 1 }}>
                     <p style={{ fontSize: "0.95rem", color: "#0a2540", fontFamily: "'Lora', serif", lineHeight: 1.5 }}>{t.text}</p>
                     <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "4px", flexWrap: "wrap" }}>
-                      <p style={{ fontSize: "0.75rem", color: "#5a8ba8", fontFamily: "'Lora', serif" }}>{t.date}</p>
-                      {t.alreadyUsed && <span style={{ fontSize: "0.72rem", color: "#3d6b85", fontFamily: "'Lora', serif", padding: "1px 7px", background: "#d4c5a9", borderRadius: "10px", fontWeight: 600 }}>Already used</span>}
+                      <p style={{ fontSize: "0.75rem", color: "#0a2540", fontFamily: "'Lora', serif" }}>{t.date}</p>
+                      {t.alreadyUsed && <span style={{ fontSize: "0.72rem", color: "#0a2540", fontFamily: "'Lora', serif", padding: "1px 7px", background: "#d4c5a9", borderRadius: "10px", fontWeight: 700 }}>Already used</span>}
                     </div>
                   </div>
                 </div>
@@ -581,8 +687,8 @@ export default function App() {
           </div>
 
           {loadingId === tweetSelection.account.id && generatingProgress.total > 0 && (
-            <div style={{ marginBottom: "12px", padding: "10px 12px", background: "#a8cee0", borderRadius: "6px" }}>
-              <p style={{ fontSize: "0.88rem", color: "#1a3a5c", fontFamily: "'Lora', serif", marginBottom: "5px" }}>
+            <div style={{ marginBottom: "12px", padding: "10px 12px", background: "#c4e0f0", borderRadius: "6px" }}>
+              <p style={{ fontSize: "0.88rem", color: "#0a2540", fontFamily: "'Lora', serif", marginBottom: "5px" }}>
                 Generating article {generatingProgress.current} of {generatingProgress.total}...
               </p>
               <div style={{ background: "#d4c5a9", borderRadius: "4px", height: "4px", overflow: "hidden" }}>
@@ -592,7 +698,7 @@ export default function App() {
           )}
 
           <button onClick={generateSelectedArticles} disabled={tweetSelection.selectedIds.size === 0 || loadingId !== null}
-            style={{ width: "100%", padding: "14px", background: tweetSelection.selectedIds.size > 0 ? "#f5c842" : "#eee", border: "1.5px solid #0a2540", borderRadius: "8px", cursor: tweetSelection.selectedIds.size > 0 ? "pointer" : "not-allowed", fontFamily: "'Poppins', sans-serif", fontWeight: 700, fontSize: "1.05rem", color: tweetSelection.selectedIds.size > 0 ? "#0a2540" : "#999", display: "flex", alignItems: "center", justifyContent: "center", gap: "7px", opacity: loadingId ? 0.6 : 1 }}>
+            style={{ width: "100%", padding: "14px", background: tweetSelection.selectedIds.size > 0 ? "#f5c842" : "#eee", border: "1.5px solid #0a2540", borderRadius: "8px", cursor: tweetSelection.selectedIds.size > 0 ? "pointer" : "not-allowed", fontFamily: "'Poppins', sans-serif", fontWeight: 800, fontSize: "1.05rem", color: tweetSelection.selectedIds.size > 0 ? "#0a2540" : "#999", display: "flex", alignItems: "center", justifyContent: "center", gap: "7px", opacity: loadingId ? 0.6 : 1 }}>
             <Icons.Refresh spinning={loadingId !== null} />
             {loadingId ? `Generating ${generatingProgress.current}/${generatingProgress.total}...` : `Generate ${tweetSelection.selectedIds.size} Article${tweetSelection.selectedIds.size !== 1 ? "s" : ""}`}
           </button>
@@ -604,11 +710,11 @@ export default function App() {
       {/* Article Detail View */}
       {activeArticle && !tweetSelection && (
         <div style={{ padding: "1.25rem", animation: "slideUp 0.25s ease" }}>
-          <div style={{ marginBottom: "1.25rem", padding: "0.9rem 1rem", background: "#a8cee0", borderRadius: "8px", borderLeft: "3px solid #c8a84b" }}>
-            <p style={{ fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: "0.12em", color: "#3d6b85", fontFamily: "'Lora', serif", marginBottom: "0.5rem", fontWeight: 600 }}>Source tweet from @{activeArticle.handle}</p>
+          <div style={{ marginBottom: "1.25rem", padding: "0.9rem 1rem", background: "#c4e0f0", borderRadius: "8px", borderLeft: "3px solid #c8a84b" }}>
+            <p style={{ fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: "0.12em", color: "#0a2540", fontFamily: "'Lora', serif", marginBottom: "0.5rem", fontWeight: 700 }}>Source tweet from @{activeArticle.handle}</p>
             <p style={{ fontSize: "0.95rem", color: "#0a2540", fontFamily: "'Lora', serif", lineHeight: 1.5 }}>{activeArticle.tweet.text}</p>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "5px" }}>
-              <p style={{ fontSize: "0.75rem", color: "#5a8ba8", fontFamily: "'Lora', serif" }}>{activeArticle.tweet.date}</p>
+              <p style={{ fontSize: "0.75rem", color: "#0a2540", fontFamily: "'Lora', serif" }}>{activeArticle.tweet.date}</p>
               {activeArticle.tweet.tweetId && (
                 <a href={`https://x.com/${activeArticle.handle}/status/${activeArticle.tweet.tweetId}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: "0.75rem", color: "#0073aa", fontFamily: "'Lora', serif", textDecoration: "none", display: "flex", alignItems: "center", gap: "3px" }}>
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.744l7.737-8.835L1.254 2.25H8.08l4.253 5.622 5.911-5.622zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
@@ -625,11 +731,11 @@ export default function App() {
 
           {activeArticle.yoast && (
             <div style={{ marginBottom: "1.5rem", padding: "0.9rem 1rem", background: "#f0f7ff", borderRadius: "8px", border: "1.5px solid #b0d4f1", borderLeft: "3px solid #0073aa" }}>
-              <p style={{ fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: "0.12em", color: "#0073aa", fontFamily: "'Lora', serif", marginBottom: "0.75rem", fontWeight: 600 }}>Yoast SEO Fields</p>
+              <p style={{ fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: "0.12em", color: "#0073aa", fontFamily: "'Lora', serif", marginBottom: "0.75rem", fontWeight: 700 }}>Yoast SEO Fields</p>
               <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                 {[{ label: "Focus Keyphrase", value: activeArticle.yoast.focusKeyphrase }, { label: "SEO Title", value: activeArticle.yoast.seoTitle, note: `${(activeArticle.yoast.seoTitle || "").length}/60` }, { label: "Slug", value: activeArticle.yoast.slug }, { label: "Meta Description", value: activeArticle.yoast.metaDescription, note: `${(activeArticle.yoast.metaDescription || "").length}/155` }].map(field => (
                   <div key={field.label}>
-                    <p style={{ fontSize: "0.72rem", textTransform: "uppercase", letterSpacing: "0.08em", color: "#4a8fbe", fontFamily: "'Lora', serif", marginBottom: "2px", fontWeight: 600, display: "flex", justifyContent: "space-between" }}>{field.label}{field.note && <span style={{ color: parseInt(field.note) > parseInt(field.note.split("/")[1]) ? "#c0392b" : "#4caf50" }}>{field.note}</span>}</p>
+                    <p style={{ fontSize: "0.72rem", textTransform: "uppercase", letterSpacing: "0.08em", color: "#4a8fbe", fontFamily: "'Lora', serif", marginBottom: "2px", fontWeight: 700, display: "flex", justifyContent: "space-between" }}>{field.label}{field.note && <span style={{ color: parseInt(field.note) > parseInt(field.note.split("/")[1]) ? "#c0392b" : "#4caf50" }}>{field.note}</span>}</p>
                     <p style={{ fontSize: "0.88rem", color: "#1a2a3a", fontFamily: "'Lora', serif", background: "#fff", padding: "5px 7px", borderRadius: "3px", border: "1px solid #b0d4f1" }}>{field.value}</p>
                   </div>
                 ))}
@@ -638,18 +744,18 @@ export default function App() {
           )}
 
           <div style={{ borderTop: "3px solid #0a2540", paddingTop: "1.5rem", marginBottom: "1.5rem" }}>
-            <p style={{ fontSize: "0.72rem", textTransform: "uppercase", letterSpacing: "0.2em", color: "#c8a84b", fontFamily: "'Lora', serif", marginBottom: "0.6rem", fontWeight: 600 }}>Generated Article</p>
+            <p style={{ fontSize: "0.72rem", textTransform: "uppercase", letterSpacing: "0.2em", color: "#c8a84b", fontFamily: "'Lora', serif", marginBottom: "0.6rem", fontWeight: 700 }}>Generated Article</p>
             <h1 style={{ fontFamily: "'Poppins', sans-serif", fontSize: "1.85rem", fontWeight: 900, lineHeight: 1.2, color: "#0a2540", marginBottom: "0.6rem" }}>{activeArticle.article.headline}</h1>
-            <p style={{ fontFamily: "'Lora', serif", fontSize: "1.05rem", fontStyle: "italic", color: "#1a3a5c", marginBottom: "1.2rem", lineHeight: 1.5 }}>{activeArticle.article.subheadline}</p>
+            <p style={{ fontFamily: "'Lora', serif", fontSize: "1.05rem", fontStyle: "italic", color: "#0a2540", marginBottom: "1.2rem", lineHeight: 1.5 }}>{activeArticle.article.subheadline}</p>
             <hr style={{ border: "none", borderTop: "1px solid #7eb5d0", marginBottom: "1.2rem" }} />
             <div>{renderArticleBody(activeArticle.article.body)}</div>
           </div>
 
           {/* Chat-edit box */}
-          <div style={{ marginBottom: "1.25rem", padding: "0.9rem 1rem", background: "#c4e0f0", borderRadius: "8px", border: "1.5px solid #c8a84b" }}>
-            <label style={{ ...labelStyle, color: "#1a3a5c" }}>Edit Article with Claude</label>
+          <div style={{ marginBottom: "1.25rem", padding: "0.9rem 1rem", background: "#F0F8FF", borderRadius: "8px", border: "1.5px solid #c8a84b" }}>
+            <label style={{ ...labelStyle, color: "#0a2540" }}>Edit Article with Claude</label>
             <textarea value={editPrompt} onChange={e => setEditPrompt(e.target.value)} placeholder="e.g. 'Change the focus to annual passholders' or 'Look up the current ticket price and add it'" rows={2} style={{ ...inputStyle, marginBottom: "8px", resize: "vertical", fontFamily: "'Lora', serif" }} />
-            <button onClick={editArticleWithPrompt} disabled={!editPrompt.trim() || editingArticle} style={{ width: "100%", padding: "10px", background: "#c8a84b", border: "1.5px solid #0a2540", borderRadius: "6px", cursor: editingArticle ? "wait" : "pointer", fontFamily: "'Lora', serif", fontSize: "0.95rem", color: "#0a2540", fontWeight: 600, opacity: (!editPrompt.trim() || editingArticle) ? 0.5 : 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}>
+            <button onClick={editArticleWithPrompt} disabled={!editPrompt.trim() || editingArticle} style={{ width: "100%", padding: "10px", background: "#c8a84b", border: "1.5px solid #0a2540", borderRadius: "6px", cursor: editingArticle ? "wait" : "pointer", fontFamily: "'Lora', serif", fontSize: "0.95rem", color: "#0a2540", fontWeight: 700, opacity: (!editPrompt.trim() || editingArticle) ? 0.5 : 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}>
               <Icons.Refresh spinning={editingArticle} />
               {editingArticle ? "Rewriting with web search..." : "Apply Changes"}
             </button>
@@ -657,11 +763,11 @@ export default function App() {
 
           <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginBottom: "1rem" }}>
             <button onClick={() => publishToWordPress(activeArticle)} disabled={publishingId === activeArticle.id || !wpConfigured}
-              style={{ width: "100%", padding: "13px", border: `1.5px solid ${wpConfigured ? "#0073aa" : "#bbb"}`, borderRadius: "8px", cursor: wpConfigured ? "pointer" : "not-allowed", background: wpConfigured ? "#0073aa" : "#eee", color: wpConfigured ? "#fff" : "#999", fontFamily: "'Poppins', sans-serif", fontWeight: 700, fontSize: "1rem", display: "flex", alignItems: "center", justifyContent: "center", gap: "7px", opacity: publishingId === activeArticle.id ? 0.6 : 1 }}>
+              style={{ width: "100%", padding: "13px", border: `1.5px solid ${wpConfigured ? "#0073aa" : "#bbb"}`, borderRadius: "8px", cursor: wpConfigured ? "pointer" : "not-allowed", background: wpConfigured ? "#0073aa" : "#eee", color: wpConfigured ? "#fff" : "#999", fontFamily: "'Poppins', sans-serif", fontWeight: 800, fontSize: "1rem", display: "flex", alignItems: "center", justifyContent: "center", gap: "7px", opacity: publishingId === activeArticle.id ? 0.6 : 1 }}>
               <Icons.WordPress />
               {publishingId === activeArticle.id ? "Publishing..." : `Publish ${publishMethod === "wpcom" ? "via Jetpack" : "to WordPress"}`}
             </button>
-            <button onClick={() => copyArticle(activeArticle)} style={{ width: "100%", padding: "13px", border: "1.5px solid #0a2540", borderRadius: "8px", cursor: "pointer", background: copied ? "#e8f5e9" : "#f5c842", color: "#0a2540", fontFamily: "'Poppins', sans-serif", fontWeight: 700, fontSize: "1rem", display: "flex", alignItems: "center", justifyContent: "center", gap: "7px" }}><Icons.Copy />{copied ? "Copied!" : "Copy Article"}</button>
+            <button onClick={() => copyArticle(activeArticle)} style={{ width: "100%", padding: "13px", border: "1.5px solid #0a2540", borderRadius: "8px", cursor: "pointer", background: copied ? "#e8f5e9" : "#f5c842", color: "#0a2540", fontFamily: "'Poppins', sans-serif", fontWeight: 800, fontSize: "1rem", display: "flex", alignItems: "center", justifyContent: "center", gap: "7px" }}><Icons.Copy />{copied ? "Copied!" : "Copy Article"}</button>
             <button onClick={() => { removeFromQueue(activeArticle.id); setActiveArticle(null); }} style={{ width: "100%", padding: "12px", border: "1.5px solid #e8a99a", borderRadius: "8px", cursor: "pointer", background: "transparent", color: "#c0392b", fontFamily: "'Lora', serif", fontSize: "0.95rem" }}>Discard Article</button>
           </div>
 
@@ -669,7 +775,7 @@ export default function App() {
             <div style={{ padding: "0.85rem 1rem", background: publishStatus.type === "success" ? "#f0faf0" : "#fdf0ee", border: `1px solid ${publishStatus.type === "success" ? "#a8dba8" : "#e8a99a"}`, borderRadius: "8px", display: "flex", alignItems: "flex-start", gap: "8px" }}>
               <span style={{ color: publishStatus.type === "success" ? "#2e7d32" : "#c0392b", marginTop: "1px" }}>{publishStatus.type === "success" ? <Icons.Check /> : <Icons.Xmark />}</span>
               <div>
-                <p style={{ fontSize: "0.92rem", fontFamily: "'Lora', serif", color: publishStatus.type === "success" ? "#2e7d32" : "#c0392b", fontWeight: 600 }}>{publishStatus.message}</p>
+                <p style={{ fontSize: "0.92rem", fontFamily: "'Lora', serif", color: publishStatus.type === "success" ? "#2e7d32" : "#c0392b", fontWeight: 700 }}>{publishStatus.message}</p>
                 {publishStatus.url && <a href={publishStatus.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: "0.85rem", color: "#0073aa", fontFamily: "'Lora', serif", textDecoration: "underline" }}>Open in WordPress Editor →</a>}
               </div>
             </div>
@@ -683,12 +789,12 @@ export default function App() {
           {activeTab === "accounts" && (
             <div style={{ padding: "1.25rem", animation: "fadeIn 0.2s ease" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
-                <p style={{ fontFamily: "'Poppins', sans-serif", fontSize: "1rem", fontWeight: 700, color: "#1a3a5c", textTransform: "uppercase", letterSpacing: "0.08em" }}>Tracked Accounts</p>
+                <p style={{ fontFamily: "'Poppins', sans-serif", fontSize: "1rem", fontWeight: 800, color: "#0a2540", textTransform: "uppercase", letterSpacing: "0.08em" }}>Tracked Accounts</p>
                 <button onClick={() => setShowAddForm(!showAddForm)} style={{ display: "flex", alignItems: "center", gap: "4px", padding: "7px 12px", border: "1.5px solid #0a2540", borderRadius: "6px", cursor: "pointer", fontSize: "0.88rem", background: showAddForm ? "#0a2540" : "transparent", color: showAddForm ? "#f5f0e8" : "#0a2540", fontFamily: "'Lora', serif" }}><Icons.Plus /> {showAddForm ? "Cancel" : "Add"}</button>
               </div>
 
               {showAddForm && (
-                <div style={{ marginBottom: "1.25rem", padding: "1rem", background: "#a8cee0", borderRadius: "8px", border: "1px solid #7eb5d0", animation: "fadeIn 0.2s ease" }}>
+                <div style={{ marginBottom: "1.25rem", padding: "1rem", background: "#c4e0f0", borderRadius: "8px", border: "1px solid #7eb5d0", animation: "fadeIn 0.2s ease" }}>
                   <label style={labelStyle}>Twitter/X Handle</label>
                   <input value={newHandle} onChange={e => setNewHandle(e.target.value)} placeholder="@handle" style={inputStyle} />
                   <label style={labelStyle}>Topic Focus</label>
@@ -696,13 +802,13 @@ export default function App() {
                   <label style={labelStyle}>RSS Feed URL (from rss.app)</label>
                   <input value={newRssUrl} onChange={e => setNewRssUrl(e.target.value)} placeholder="https://rss.app/feeds/xxxxx.xml" style={{ ...inputStyle, marginBottom: "8px" }} />
                   {newTopic && resolveAuthor(newTopic, topicAuthors) && <p style={{ fontSize: "0.82rem", color: "#2e7d32", fontFamily: "'Lora', serif", marginBottom: "10px", display: "flex", alignItems: "center", gap: "4px" }}><Icons.Check /> Author: <strong>{resolveAuthor(newTopic, topicAuthors)}</strong></p>}
-                  <button onClick={addAccount} style={{ width: "100%", padding: "12px", background: "#f5c842", border: "1.5px solid #0a2540", borderRadius: "6px", cursor: "pointer", fontFamily: "'Poppins', sans-serif", fontWeight: 700, fontSize: "1rem", color: "#0a2540" }}>Add Account</button>
+                  <button onClick={addAccount} style={{ width: "100%", padding: "12px", background: "#f5c842", border: "1.5px solid #0a2540", borderRadius: "6px", cursor: "pointer", fontFamily: "'Poppins', sans-serif", fontWeight: 800, fontSize: "1rem", color: "#0a2540" }}>Add Account</button>
                   {error && <p style={{ color: "#c0392b", fontSize: "0.85rem", marginTop: "6px" }}>{error}</p>}
                 </div>
               )}
 
               {accounts.length === 0 ? (
-                <div style={{ textAlign: "center", padding: "3rem 1rem", color: "#5a8ba8" }}>
+                <div style={{ textAlign: "center", padding: "3rem 1rem", color: "#0a2540" }}>
                   <div style={{ fontSize: "2.5rem", marginBottom: "0.75rem" }}>📰</div>
                   <p style={{ fontFamily: "'Poppins', sans-serif", fontStyle: "italic", fontSize: "1.1rem", marginBottom: "0.5rem" }}>No accounts yet.</p>
                   <p style={{ fontSize: "0.88rem", fontFamily: "'Lora', serif" }}>Tap Add to start tracking a Twitter/X account.</p>
@@ -714,26 +820,29 @@ export default function App() {
                     const queueCount = (account.queue || []).length;
                     const isFetching = fetchingTweetsFor === account.id;
                     return (
-                      <div key={account.id} style={{ padding: "1rem", background: "#b8d8e8", borderRadius: "8px", border: "1.5px solid #7eb5d0" }}>
+                      <div key={account.id} style={{ padding: "1rem", background: "#dbeaf4", borderRadius: "8px", border: "1.5px solid #7eb5d0" }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "10px" }}>
                           <div>
-                            <p style={{ fontFamily: "'Poppins', sans-serif", fontWeight: 700, fontSize: "1.1rem", color: "#0a2540" }}>@{account.handle}</p>
-                            <p style={{ fontSize: "0.85rem", color: "#3d6b85", fontFamily: "'Lora', serif", marginTop: "2px" }}>{account.topic}</p>
+                            <p style={{ fontFamily: "'Poppins', sans-serif", fontWeight: 800, fontSize: "1.1rem", color: "#0a2540" }}>@{account.handle}</p>
+                            <p style={{ fontSize: "0.85rem", color: "#0a2540", fontFamily: "'Lora', serif", marginTop: "2px" }}>{account.topic}</p>
                             {author && <p style={{ fontSize: "0.8rem", color: "#5a8a6a", fontFamily: "'Lora', serif", marginTop: "2px", display: "flex", alignItems: "center", gap: "3px" }}><Icons.User /> {author}</p>}
-                            <p style={{ fontSize: "0.78rem", color: "#5a8ba8", marginTop: "3px", fontFamily: "'Lora', serif" }}>Checked: {timeAgo(account.lastChecked)}</p>
-                            {queueCount > 0 && <p style={{ fontSize: "0.78rem", color: "#c8a84b", marginTop: "2px", fontFamily: "'Lora', serif", fontWeight: 600 }}>{queueCount} in queue</p>}
+                            <p style={{ fontSize: "0.78rem", color: "#0a2540", marginTop: "3px", fontFamily: "'Lora', serif" }}>Checked: {timeAgo(account.lastChecked)}</p>
+                            {queueCount > 0 && <p style={{ fontSize: "0.78rem", color: "#c8a84b", marginTop: "2px", fontFamily: "'Lora', serif", fontWeight: 700 }}>{queueCount} in queue</p>}
                           </div>
                           <button onClick={() => removeAccount(account.id)} style={{ background: "none", border: "none", cursor: "pointer", color: "#c8b99a", padding: "4px" }}><Icons.Trash /></button>
                         </div>
                         <div style={{ display: "flex", gap: "6px" }}>
-                          <button onClick={() => fetchTweetsForSelection(account)} disabled={isFetching} style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "5px", padding: "10px", border: "1.5px solid #0a2540", borderRadius: "6px", cursor: isFetching ? "wait" : "pointer", background: "#0a2540", color: "#e8f4fc", fontFamily: "'Lora', serif", fontSize: "0.92rem", opacity: isFetching ? 0.6 : 1 }}>
+                          <button onClick={() => fetchTweetsForSelection(account)} disabled={isFetching} style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "5px", padding: "10px", border: "1.5px solid #0a2540", borderRadius: "6px", cursor: isFetching ? "wait" : "pointer", background: "#c4e0f0", color: "#0a2540", fontFamily: "'Lora', serif", fontSize: "0.92rem", opacity: isFetching ? 0.6 : 1 }}>
                             <Icons.Refresh spinning={isFetching} />
                             {isFetching ? "Fetching..." : "Fetch New Tweets"}
                           </button>
-                          <button onClick={() => fetchTweetsForSelection(account, true)} disabled={isFetching} style={{ padding: "10px 12px", border: "1.5px solid #c8a84b", borderRadius: "6px", cursor: isFetching ? "wait" : "pointer", background: "transparent", color: "#1a3a5c", fontFamily: "'Lora', serif", fontSize: "0.92rem" }} title="Show all tweets including ones already used">
+                          <button onClick={() => fetchTweetsForSelection(account, true)} disabled={isFetching} style={{ padding: "10px 12px", border: "1.5px solid #c8a84b", borderRadius: "6px", cursor: isFetching ? "wait" : "pointer", background: "transparent", color: "#0a2540", fontFamily: "'Lora', serif", fontSize: "0.92rem" }} title="Show all tweets including ones already used">
                             All
                           </button>
-                          <button onClick={() => setShowManualInput(showManualInput === account.id ? null : account.id)} style={{ padding: "10px 12px", border: "1.5px solid #c8a84b", borderRadius: "6px", cursor: "pointer", background: showManualInput === account.id ? "#f5c842" : "transparent", color: "#1a3a5c", fontFamily: "'Lora', serif", fontSize: "0.92rem" }} title="Manual paste">
+                          <button onClick={() => { if (confirm(`Clear history of ${(account.usedTweetIds || []).length} used tweets for @${account.handle}? You can re-fetch and re-draft them after.`)) clearTweetHistory(account.id); }} style={{ padding: "10px 12px", border: "1.5px solid #c8a84b", borderRadius: "6px", cursor: "pointer", background: "transparent", color: "#0a2540", fontFamily: "'Lora', serif", fontSize: "0.92rem" }} title="Clear cache of used tweets">
+                            ↻
+                          </button>
+                          <button onClick={() => setShowManualInput(showManualInput === account.id ? null : account.id)} style={{ padding: "10px 12px", border: "1.5px solid #c8a84b", borderRadius: "6px", cursor: "pointer", background: showManualInput === account.id ? "#f5c842" : "transparent", color: "#0a2540", fontFamily: "'Lora', serif", fontSize: "0.92rem" }} title="Manual paste">
                             ✍
                           </button>
                         </div>
@@ -741,7 +850,7 @@ export default function App() {
                           <div style={{ marginTop: "10px", padding: "10px", background: "#dbeaf4", borderRadius: "6px", border: "1px solid #0a2540" }}>
                             <label style={labelStyle}>Paste Tweet Text</label>
                             <textarea value={manualTweetText} onChange={e => setManualTweetText(e.target.value)} placeholder="Paste tweet content here..." rows={3} style={{ ...inputStyle, marginBottom: "8px", resize: "vertical", fontFamily: "'Lora', serif" }} />
-                            <button onClick={() => submitManualTweet(account)} disabled={!manualTweetText.trim()} style={{ width: "100%", padding: "9px", background: "#f5c842", border: "1.5px solid #0a2540", borderRadius: "6px", cursor: "pointer", fontFamily: "'Lora', serif", fontSize: "0.9rem", color: "#0a2540", fontWeight: 600, opacity: !manualTweetText.trim() ? 0.5 : 1 }}>
+                            <button onClick={() => submitManualTweet(account)} disabled={!manualTweetText.trim()} style={{ width: "100%", padding: "9px", background: "#f5c842", border: "1.5px solid #0a2540", borderRadius: "6px", cursor: "pointer", fontFamily: "'Lora', serif", fontSize: "0.9rem", color: "#0a2540", fontWeight: 700, opacity: !manualTweetText.trim() ? 0.5 : 1 }}>
                               Generate Article from Tweet
                             </button>
                           </div>
@@ -758,11 +867,11 @@ export default function App() {
           {activeTab === "queue" && (
             <div style={{ padding: "1.25rem", animation: "fadeIn 0.2s ease" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
-                <p style={{ fontFamily: "'Poppins', sans-serif", fontSize: "1rem", fontWeight: 700, color: "#1a3a5c", textTransform: "uppercase", letterSpacing: "0.08em" }}>Article Queue</p>
-                {totalQueued > 0 && <span style={{ background: "#f5c842", color: "#0a2540", borderRadius: "12px", padding: "2px 9px", fontSize: "0.82rem", fontFamily: "'Poppins', sans-serif", fontWeight: 700 }}>{totalQueued}</span>}
+                <p style={{ fontFamily: "'Poppins', sans-serif", fontSize: "1rem", fontWeight: 800, color: "#0a2540", textTransform: "uppercase", letterSpacing: "0.08em" }}>Article Queue</p>
+                {totalQueued > 0 && <span style={{ background: "#f5c842", color: "#0a2540", borderRadius: "12px", padding: "2px 9px", fontSize: "0.82rem", fontFamily: "'Poppins', sans-serif", fontWeight: 800 }}>{totalQueued}</span>}
               </div>
               {totalQueued === 0 ? (
-                <div style={{ textAlign: "center", padding: "3rem 1rem", color: "#5a8ba8" }}>
+                <div style={{ textAlign: "center", padding: "3rem 1rem", color: "#0a2540" }}>
                   <div style={{ fontSize: "2.5rem", marginBottom: "0.75rem" }}>📋</div>
                   <p style={{ fontFamily: "'Poppins', sans-serif", fontStyle: "italic", fontSize: "1.1rem", marginBottom: "0.5rem" }}>Queue is empty.</p>
                   <p style={{ fontSize: "0.88rem", fontFamily: "'Lora', serif" }}>Pick tweets from an account to generate articles.</p>
@@ -770,18 +879,18 @@ export default function App() {
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
                   {allQueued.map(item => (
-                    <div key={item.id} style={{ padding: "1rem", background: "#b8d8e8", borderRadius: "8px", border: "1.5px solid #7eb5d0" }}>
+                    <div key={item.id} style={{ padding: "1rem", background: "#dbeaf4", borderRadius: "8px", border: "1.5px solid #7eb5d0" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "6px" }}>
                         <div style={{ flex: 1, marginRight: "8px" }}>
-                          <p style={{ fontFamily: "'Poppins', sans-serif", fontWeight: 700, fontSize: "1.02rem", color: "#0a2540", lineHeight: 1.3 }}>{item.article.headline}</p>
-                          <p style={{ fontSize: "0.78rem", color: "#3d6b85", fontFamily: "'Lora', serif", marginTop: "3px" }}>@{item.handle} · {item.tweet.date}</p>
+                          <p style={{ fontFamily: "'Poppins', sans-serif", fontWeight: 800, fontSize: "1.02rem", color: "#0a2540", lineHeight: 1.3 }}>{item.article.headline}</p>
+                          <p style={{ fontSize: "0.78rem", color: "#0a2540", fontFamily: "'Lora', serif", marginTop: "3px" }}>@{item.handle} · {item.tweet.date}</p>
                           {item.assignedAuthor && <p style={{ fontSize: "0.78rem", color: "#5a8a6a", fontFamily: "'Lora', serif", marginTop: "2px" }}>{item.assignedAuthor}</p>}
                         </div>
                         <button onClick={() => removeFromQueue(item.id)} style={{ background: "none", border: "none", cursor: "pointer", color: "#c8b99a", padding: "4px", flexShrink: 0 }}><Icons.Trash /></button>
                       </div>
-                      <p style={{ fontSize: "0.88rem", color: "#1a3a5c", fontFamily: "'Lora', serif", fontStyle: "italic", marginBottom: "10px", lineHeight: 1.4 }}>{item.article.subheadline}</p>
+                      <p style={{ fontSize: "0.88rem", color: "#0a2540", fontFamily: "'Lora', serif", fontStyle: "italic", marginBottom: "10px", lineHeight: 1.4 }}>{item.article.subheadline}</p>
                       <div style={{ display: "flex", gap: "8px" }}>
-                        <button onClick={() => setActiveArticle(item)} style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "5px", padding: "9px", border: "1.5px solid #0a2540", borderRadius: "6px", cursor: "pointer", background: "#0a2540", color: "#e8f4fc", fontFamily: "'Lora', serif", fontSize: "0.9rem" }}><Icons.Article /> Read & Publish</button>
+                        <button onClick={() => setActiveArticle(item)} style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "5px", padding: "9px", border: "1.5px solid #0a2540", borderRadius: "6px", cursor: "pointer", background: "#c4e0f0", color: "#0a2540", fontFamily: "'Lora', serif", fontSize: "0.9rem" }}><Icons.Article /> Read & Publish</button>
                         <button onClick={() => publishToWordPress(item)} disabled={publishingId === item.id || !wpConfigured} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "5px", padding: "9px 12px", border: "1.5px solid #0073aa", borderRadius: "6px", cursor: wpConfigured ? "pointer" : "not-allowed", background: wpConfigured ? "#0073aa" : "#eee", color: wpConfigured ? "#fff" : "#999", fontFamily: "'Lora', serif", fontSize: "0.9rem", opacity: publishingId === item.id ? 0.6 : 1 }}><Icons.WordPress />{publishingId === item.id ? "..." : "Publish"}</button>
                       </div>
                     </div>
@@ -792,7 +901,7 @@ export default function App() {
                 <div style={{ marginTop: "1rem", padding: "0.85rem 1rem", background: publishStatus.type === "success" ? "#f0faf0" : "#fdf0ee", border: `1px solid ${publishStatus.type === "success" ? "#a8dba8" : "#e8a99a"}`, borderRadius: "8px", display: "flex", alignItems: "flex-start", gap: "8px" }}>
                   <span style={{ color: publishStatus.type === "success" ? "#2e7d32" : "#c0392b" }}>{publishStatus.type === "success" ? <Icons.Check /> : <Icons.Xmark />}</span>
                   <div>
-                    <p style={{ fontSize: "0.92rem", fontFamily: "'Lora', serif", color: publishStatus.type === "success" ? "#2e7d32" : "#c0392b", fontWeight: 600 }}>{publishStatus.message}</p>
+                    <p style={{ fontSize: "0.92rem", fontFamily: "'Lora', serif", color: publishStatus.type === "success" ? "#2e7d32" : "#c0392b", fontWeight: 700 }}>{publishStatus.message}</p>
                     {publishStatus.url && <a href={publishStatus.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: "0.85rem", color: "#0073aa", fontFamily: "'Lora', serif", textDecoration: "underline" }}>Open in WordPress Editor →</a>}
                   </div>
                 </div>
@@ -802,74 +911,102 @@ export default function App() {
 
           {activeTab === "authors" && (
             <div style={{ padding: "1.25rem", animation: "fadeIn 0.2s ease" }}>
-              <p style={{ fontFamily: "'Poppins', sans-serif", fontSize: "1rem", fontWeight: 700, color: "#1a3a5c", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: "0.4rem" }}>Topic Author Rules</p>
-              <p style={{ fontSize: "0.85rem", color: "#3d6b85", fontFamily: "'Lora', serif", marginBottom: "1.25rem", lineHeight: 1.6 }}>When a topic contains the keyword, that author is assigned in WordPress.</p>
+              <p style={{ fontFamily: "'Poppins', sans-serif", fontSize: "1rem", fontWeight: 800, color: "#0a2540", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: "0.4rem" }}>Topic Author Rules</p>
+              <p style={{ fontSize: "0.85rem", color: "#0a2540", fontFamily: "'Lora', serif", marginBottom: "1.25rem", lineHeight: 1.6 }}>When a topic contains the keyword, that author is assigned in WordPress.</p>
               {topicAuthors.length > 0 && (
                 <div style={{ marginBottom: "1.25rem", display: "flex", flexDirection: "column", gap: "8px" }}>
                   {topicAuthors.map(ta => (
-                    <div key={ta.id} style={{ display: "flex", alignItems: "center", gap: "10px", padding: "10px 12px", background: "#b8d8e8", borderRadius: "8px", border: "1px solid #7eb5d0" }}>
-                      <span style={{ fontFamily: "'Lora', serif", fontSize: "0.95rem", color: "#c8a84b", fontWeight: 600, flex: 1 }}>{ta.keyword}</span>
-                      <span style={{ fontSize: "0.82rem", color: "#5a8ba8" }}>→</span>
+                    <div key={ta.id} style={{ display: "flex", alignItems: "center", gap: "10px", padding: "10px 12px", background: "#dbeaf4", borderRadius: "8px", border: "1px solid #7eb5d0" }}>
+                      <span style={{ fontFamily: "'Lora', serif", fontSize: "0.95rem", color: "#c8a84b", fontWeight: 700, flex: 1 }}>{ta.keyword}</span>
+                      <span style={{ fontSize: "0.82rem", color: "#0a2540" }}>→</span>
                       <span style={{ fontFamily: "'Lora', serif", fontSize: "0.95rem", color: "#0a2540", flex: 1 }}>{ta.author}</span>
                       <button onClick={() => saveTopicAuthors(topicAuthors.filter(t => t.id !== ta.id))} style={{ background: "none", border: "none", cursor: "pointer", color: "#c8b99a", padding: "4px" }}><Icons.Trash /></button>
                     </div>
                   ))}
                 </div>
               )}
-              <div style={{ padding: "1rem", background: "#a8cee0", borderRadius: "8px", border: "1px solid #7eb5d0" }}>
+              <div style={{ padding: "1rem", background: "#c4e0f0", borderRadius: "8px", border: "1px solid #7eb5d0" }}>
                 <label style={labelStyle}>Topic Keyword</label>
                 <input value={newKeyword} onChange={e => setNewKeyword(e.target.value)} placeholder="e.g. Disney Parks" style={inputStyle} />
                 <label style={labelStyle}>Author Name</label>
                 <input value={newAuthor} onChange={e => setNewAuthor(e.target.value)} placeholder="e.g. Matthew Smith" style={{ ...inputStyle, marginBottom: "10px" }} />
-                <button onClick={addTopicAuthor} disabled={!newKeyword.trim() || !newAuthor.trim()} style={{ width: "100%", padding: "12px", background: "#f5c842", border: "1.5px solid #0a2540", borderRadius: "6px", cursor: "pointer", fontFamily: "'Poppins', sans-serif", fontWeight: 700, fontSize: "1rem", color: "#0a2540", opacity: (!newKeyword.trim() || !newAuthor.trim()) ? 0.5 : 1 }}>Add Rule</button>
+                <button onClick={addTopicAuthor} disabled={!newKeyword.trim() || !newAuthor.trim()} style={{ width: "100%", padding: "12px", background: "#f5c842", border: "1.5px solid #0a2540", borderRadius: "6px", cursor: "pointer", fontFamily: "'Poppins', sans-serif", fontWeight: 800, fontSize: "1rem", color: "#0a2540", opacity: (!newKeyword.trim() || !newAuthor.trim()) ? 0.5 : 1 }}>Add Rule</button>
               </div>
+            </div>
+          )}
+
+          {activeTab === "quick" && (
+            <div style={{ padding: "1.25rem", animation: "fadeIn 0.2s ease" }}>
+              <p style={{ fontFamily: "'Poppins', sans-serif", fontSize: "1rem", fontWeight: 800, color: "#0a2540", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: "0.4rem" }}>Quick Article from Any Tweet</p>
+              <p style={{ fontSize: "0.85rem", color: "#0a2540", fontFamily: "'Lora', serif", marginBottom: "1.25rem", lineHeight: 1.6 }}>
+                Paste any tweet text to generate an article. No need to set up a tracked account.
+              </p>
+
+              <div style={{ padding: "1rem", background: "#dbeaf4", borderRadius: "8px", border: "1px solid #7eb5d0" }}>
+                <label style={labelStyle}>Source Handle (optional)</label>
+                <input value={quickHandle} onChange={e => setQuickHandle(e.target.value)} placeholder="@username (optional)" style={inputStyle} />
+
+                <label style={labelStyle}>Topic / Focus</label>
+                <input value={quickTopic} onChange={e => setQuickTopic(e.target.value)} placeholder="e.g. Disney Parks news, Marvel updates" style={inputStyle} />
+                {quickTopic && resolveAuthor(quickTopic, topicAuthors) && <p style={{ fontSize: "0.82rem", color: "#2e7d32", fontFamily: "'Lora', serif", marginBottom: "10px", display: "flex", alignItems: "center", gap: "4px" }}><Icons.Check /> Author: <strong>{resolveAuthor(quickTopic, topicAuthors)}</strong></p>}
+
+                <label style={labelStyle}>Tweet Text or URL</label>
+                <textarea value={quickTweetText} onChange={e => setQuickTweetText(e.target.value)} placeholder="Paste tweet text OR a URL like https://x.com/user/status/123..." rows={4} style={{ ...inputStyle, marginBottom: "12px", resize: "vertical", fontFamily: "'Lora', serif" }} />
+
+                <button onClick={generateQuickArticle} disabled={generatingQuick || !quickTweetText.trim() || !quickTopic.trim()} style={{ width: "100%", padding: "13px", background: "#c4e0f0", border: "1.5px solid #0a2540", borderRadius: "6px", cursor: generatingQuick ? "wait" : "pointer", fontFamily: "'Poppins', sans-serif", fontWeight: 800, fontSize: "1rem", color: "#0a2540", display: "flex", alignItems: "center", justifyContent: "center", gap: "7px", opacity: (generatingQuick || !quickTweetText.trim() || !quickTopic.trim()) ? 0.5 : 1 }}>
+                  <Icons.Refresh spinning={generatingQuick} />
+                  {generatingQuick ? "Generating with web search..." : "Generate Article"}
+                </button>
+              </div>
+
+              {error && <p style={{ color: "#c0392b", fontSize: "0.88rem", marginTop: "10px", fontFamily: "'Lora', serif" }}>{error}</p>}
             </div>
           )}
 
           {activeTab === "wordpress" && (
             <div style={{ padding: "1.25rem", animation: "fadeIn 0.2s ease" }}>
-              <p style={{ fontFamily: "'Poppins', sans-serif", fontSize: "1rem", fontWeight: 700, color: "#1a3a5c", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: "0.4rem" }}>WordPress Connection</p>
+              <p style={{ fontFamily: "'Poppins', sans-serif", fontSize: "1rem", fontWeight: 800, color: "#0a2540", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: "0.4rem" }}>WordPress Connection</p>
 
               {/* Method toggle */}
-              <div style={{ display: "flex", gap: "8px", marginBottom: "1.25rem", background: "#a8cee0", padding: "4px", borderRadius: "8px" }}>
-                <button onClick={() => setPublishMethod("wpcom")} style={{ flex: 1, padding: "8px", border: "none", borderRadius: "6px", cursor: "pointer", background: publishMethod === "wpcom" ? "#0a2540" : "transparent", color: publishMethod === "wpcom" ? "#f5f0e8" : "#6b5a3e", fontFamily: "'Lora', serif", fontSize: "0.9rem", fontWeight: 600 }}>Jetpack (Recommended)</button>
-                <button onClick={() => setPublishMethod("basic")} style={{ flex: 1, padding: "8px", border: "none", borderRadius: "6px", cursor: "pointer", background: publishMethod === "basic" ? "#0a2540" : "transparent", color: publishMethod === "basic" ? "#f5f0e8" : "#6b5a3e", fontFamily: "'Lora', serif", fontSize: "0.9rem", fontWeight: 600 }}>Direct</button>
+              <div style={{ display: "flex", gap: "8px", marginBottom: "1.25rem", background: "#c4e0f0", padding: "4px", borderRadius: "8px" }}>
+                <button onClick={() => setPublishMethod("wpcom")} style={{ flex: 1, padding: "8px", border: "none", borderRadius: "6px", cursor: "pointer", background: publishMethod === "wpcom" ? "#0a2540" : "transparent", color: publishMethod === "wpcom" ? "#f5f0e8" : "#6b5a3e", fontFamily: "'Lora', serif", fontSize: "0.9rem", fontWeight: 700 }}>Jetpack (Recommended)</button>
+                <button onClick={() => setPublishMethod("basic")} style={{ flex: 1, padding: "8px", border: "none", borderRadius: "6px", cursor: "pointer", background: publishMethod === "basic" ? "#0a2540" : "transparent", color: publishMethod === "basic" ? "#f5f0e8" : "#6b5a3e", fontFamily: "'Lora', serif", fontSize: "0.9rem", fontWeight: 700 }}>Direct</button>
               </div>
 
               {publishMethod === "wpcom" ? (
                 <div>
-                  <p style={{ fontSize: "0.88rem", color: "#3d6b85", fontFamily: "'Lora', serif", marginBottom: "1rem", lineHeight: 1.6 }}>
+                  <p style={{ fontSize: "0.88rem", color: "#0a2540", fontFamily: "'Lora', serif", marginBottom: "1rem", lineHeight: 1.6 }}>
                     Connect via Jetpack/WordPress.com. This bypasses host firewalls and works with GoDaddy Managed Hosting. Requires this app to be deployed at a real URL (e.g. Vercel) -- OAuth does not work inside Claude artifacts.
                   </p>
                   {wpcomConnected ? (
                     <div style={{ padding: "1rem", background: "#f0faf0", borderRadius: "8px", border: "1.5px solid #a8dba8", marginBottom: "10px" }}>
-                      <p style={{ fontSize: "0.95rem", fontFamily: "'Lora', serif", color: "#2e7d32", fontWeight: 600, display: "flex", alignItems: "center", gap: "6px", marginBottom: "5px" }}><Icons.Check /> Connected to WordPress.com</p>
-                      {wpcomUser && <p style={{ fontSize: "0.85rem", color: "#5a7a5a", fontFamily: "'Lora', serif" }}>As: {wpcomUser}</p>}
-                      <p style={{ fontSize: "0.8rem", color: "#5a7a5a", fontFamily: "'Lora', serif", marginTop: "3px" }}>Site ID: {wpcomBlogId}</p>
+                      <p style={{ fontSize: "0.95rem", fontFamily: "'Lora', serif", color: "#2e7d32", fontWeight: 700, display: "flex", alignItems: "center", gap: "6px", marginBottom: "5px" }}><Icons.Check /> Connected to WordPress.com</p>
+                      {wpcomUser && <p style={{ fontSize: "0.85rem", color: "#0a2540", fontFamily: "'Lora', serif" }}>As: {wpcomUser}</p>}
+                      <p style={{ fontSize: "0.8rem", color: "#0a2540", fontFamily: "'Lora', serif", marginTop: "3px" }}>Site ID: {wpcomBlogId}</p>
                       <button onClick={disconnectWordPressCom} style={{ marginTop: "10px", padding: "8px 14px", background: "transparent", border: "1.5px solid #c0392b", borderRadius: "5px", cursor: "pointer", color: "#c0392b", fontFamily: "'Lora', serif", fontSize: "0.9rem" }}>Disconnect</button>
                     </div>
                   ) : (
-                    <button onClick={connectWordPressCom} style={{ width: "100%", padding: "14px", background: "#0073aa", border: "1.5px solid #0073aa", borderRadius: "8px", cursor: "pointer", fontFamily: "'Poppins', sans-serif", fontWeight: 700, fontSize: "1rem", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", gap: "7px" }}>
+                    <button onClick={connectWordPressCom} style={{ width: "100%", padding: "14px", background: "#0073aa", border: "1.5px solid #0073aa", borderRadius: "8px", cursor: "pointer", fontFamily: "'Poppins', sans-serif", fontWeight: 800, fontSize: "1rem", color: "#0a2540", display: "flex", alignItems: "center", justifyContent: "center", gap: "7px" }}>
                       <Icons.WordPress /> Connect with WordPress.com
                     </button>
                   )}
                 </div>
               ) : (
                 <div>
-                  <p style={{ fontSize: "0.85rem", color: "#3d6b85", fontFamily: "'Lora', serif", marginBottom: "1.25rem", lineHeight: 1.6 }}>Generate an Application Password in WP Admin under Users → Profile.</p>
+                  <p style={{ fontSize: "0.85rem", color: "#0a2540", fontFamily: "'Lora', serif", marginBottom: "1.25rem", lineHeight: 1.6 }}>Generate an Application Password in WP Admin under Users → Profile.</p>
                   <div style={{ display: "flex", flexDirection: "column", gap: "12px", marginBottom: "14px" }}>
                     <div><label style={labelStyle}>Site URL</label><input value={wpSiteUrl} onChange={e => setWpSiteUrl(e.target.value)} placeholder="https://yoursite.com" style={inputStyle} /></div>
                     <div><label style={labelStyle}>Username</label><input value={wpUsername} onChange={e => setWpUsername(e.target.value)} placeholder="your_username" style={inputStyle} /></div>
                     <div><label style={labelStyle}>Application Password</label><input value={wpAppPassword} onChange={e => setWpAppPassword(e.target.value)} placeholder="xxxx xxxx xxxx xxxx" type="password" style={inputStyle} /></div>
                   </div>
                   <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-                    <button onClick={saveWpSettings} style={{ width: "100%", padding: "12px", background: "#f5c842", border: "1.5px solid #0a2540", borderRadius: "6px", cursor: "pointer", fontFamily: "'Poppins', sans-serif", fontWeight: 700, fontSize: "1rem", color: "#0a2540" }}>Save Settings</button>
+                    <button onClick={saveWpSettings} style={{ width: "100%", padding: "12px", background: "#f5c842", border: "1.5px solid #0a2540", borderRadius: "6px", cursor: "pointer", fontFamily: "'Poppins', sans-serif", fontWeight: 800, fontSize: "1rem", color: "#0a2540" }}>Save Settings</button>
                     <button onClick={testWpConnection} disabled={testingWp || !wpSiteUrl || !wpUsername || !wpAppPassword} style={{ width: "100%", padding: "12px", background: "transparent", border: "1.5px solid #0073aa", borderRadius: "6px", cursor: "pointer", fontFamily: "'Lora', serif", fontSize: "1rem", color: "#0073aa", opacity: (testingWp || !wpSiteUrl || !wpUsername || !wpAppPassword) ? 0.5 : 1 }}>{testingWp ? "Testing..." : "Test Connection"}</button>
                   </div>
                   {wpTestResult && (
                     <div style={{ marginTop: "12px", padding: "0.85rem 1rem", background: wpTestResult.success ? "#f0faf0" : "#fdf0ee", border: `1px solid ${wpTestResult.success ? "#a8dba8" : "#e8a99a"}`, borderRadius: "8px", display: "flex", alignItems: "center", gap: "8px" }}>
                       <span style={{ color: wpTestResult.success ? "#2e7d32" : "#c0392b" }}>{wpTestResult.success ? <Icons.Check /> : <Icons.Xmark />}</span>
-                      <p style={{ fontSize: "0.92rem", fontFamily: "'Lora', serif", color: wpTestResult.success ? "#2e7d32" : "#c0392b", fontWeight: 600 }}>{wpTestResult.message}</p>
+                      <p style={{ fontSize: "0.92rem", fontFamily: "'Lora', serif", color: wpTestResult.success ? "#2e7d32" : "#c0392b", fontWeight: 700 }}>{wpTestResult.message}</p>
                     </div>
                   )}
                 </div>
@@ -881,12 +1018,12 @@ export default function App() {
 
       {/* Bottom Nav */}
       {!activeArticle && !tweetSelection && (
-        <nav style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: "#0a2540", borderTop: "2px solid #c8a84b", display: "flex", zIndex: 100 }}>
+        <nav style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: "#c4e0f0", borderTop: "2px solid #0a2540", display: "flex", zIndex: 100 }}>
           {NAV_TABS.map(tab => (
-            <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{ flex: 1, padding: "12px 8px 10px", background: activeTab === tab.id ? "rgba(245,200,66,0.15)" : "transparent", border: "none", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: "4px", borderTop: activeTab === tab.id ? "2px solid #f5c842" : "2px solid transparent", transition: "all 0.15s", position: "relative" }}>
-              {tab.id === "queue" && totalQueued > 0 && <span style={{ position: "absolute", top: "6px", right: "18px", background: "#f5c842", color: "#0a2540", borderRadius: "8px", padding: "0px 5px", fontSize: "0.55rem", fontWeight: 700, fontFamily: "'Poppins', sans-serif" }}>{totalQueued}</span>}
-              <span style={{ color: activeTab === tab.id ? "#f5c842" : "#a0946e" }}>{Icons[tab.icon]()}</span>
-              <span style={{ fontSize: "0.72rem", color: activeTab === tab.id ? "#f5c842" : "#a0946e", fontFamily: "'Lora', serif", letterSpacing: "0.05em" }}>{tab.label}</span>
+            <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{ flex: 1, padding: "12px 8px 10px", background: activeTab === tab.id ? "rgba(10,37,64,0.12)" : "transparent", border: "none", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: "4px", borderTop: activeTab === tab.id ? "2px solid #0a2540" : "2px solid transparent", transition: "all 0.15s", position: "relative" }}>
+              {tab.id === "queue" && totalQueued > 0 && <span style={{ position: "absolute", top: "6px", right: "18px", background: "#f5c842", color: "#0a2540", borderRadius: "8px", padding: "0px 5px", fontSize: "0.55rem", fontWeight: 800, fontFamily: "'Poppins', sans-serif" }}>{totalQueued}</span>}
+              <span style={{ color: "#0a2540" }}>{Icons[tab.icon]()}</span>
+              <span style={{ fontSize: "0.72rem", color: "#0a2540", fontFamily: "'Lora', serif", letterSpacing: "0.05em" }}>{tab.label}</span>
             </button>
           ))}
         </nav>
