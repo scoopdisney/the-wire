@@ -310,36 +310,60 @@ export default function App() {
     try {
       const newArticles = [];
       const newUsedIds = [...(account.usedTweetIds || [])];
+      let failedCount = 0;
+      const failedReasons = [];
 
       for (let i = 0; i < selectedTweets.length; i++) {
         setGeneratingProgress({ current: i + 1, total: selectedTweets.length });
         const tweet = selectedTweets[i];
-        try {
-          const prompt = `Write a complete editorial article based on this tweet from @${account.handle} about "${account.topic}":\n\nTweet: "${tweet.text}"\nDate: ${tweet.date}\n\nFirst, use web search to verify the facts and find current, accurate information related to this tweet. Then write the article using verified information. Include background, analysis, and what it means for fans. Plus generate Yoast SEO fields. CRITICAL: Do NOT include any HTML tags, citation markers like cite tags, or reference indices in the article body. The body must be clean prose only with no XML or HTML.\n\nReturn ONLY JSON, no markdown:\n{"article":{"headline":"","subheadline":"","body":"4+ paragraphs with ## subheadings, \\n\\n between paragraphs"},"yoast":{"focusKeyphrase":"2-4 words","seoTitle":"under 60 chars","metaDescription":"under 155 chars with CTA","slug":"url-friendly-slug"}}`;
-          const r = await fetch("/api/anthropic", {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ model: "claude-sonnet-4-5", max_tokens: 4000, tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }], messages: [{ role: "user", content: prompt }] })
-          });
-          const d = await r.json();
-          if (d.error) throw new Error(d.error.message);
-          // Find the final text block (after any tool use)
-          const textBlocks = d.content?.filter(b => b.type === "text") || [];
-          const raw = textBlocks.map(b => b.text).join("\n");
-          const m = raw.match(/\{[\s\S]*\}/);
-          if (!m) continue;
-          const parsed = JSON.parse(m[0]);
-          if (parsed.article?.body) {
-            parsed.article.body = parsed.article.body.replace(/<\/?cite[^>]*>/gi, "").replace(/[ \t]+/g, " ").replace(/ ([.,!?])/g, "$1").trim();
+        let attempts = 0;
+        let success = false;
+        while (attempts < 2 && !success) {
+          attempts++;
+          try {
+            const prompt = `Write a complete editorial article based on this tweet from @${account.handle} about "${account.topic}":\n\nTweet: "${tweet.text}"\nDate: ${tweet.date}\n\nFirst, use web search to verify the facts and find current, accurate information related to this tweet. Then write the article using verified information. Include background, analysis, and what it means for fans. Plus generate Yoast SEO fields. CRITICAL CONSTRAINTS:\n- Headline MUST be SEO-optimized AND under 60 characters (count them!). Include the focus keyphrase naturally.\n- SEO title MUST be under 60 characters.\n- Meta description MUST be under 155 characters with a clear CTA.\n- Do NOT include any HTML tags, citation markers like cite tags, or reference indices in the article body.\n- The body must be clean prose only with no XML or HTML.\n\nReturn ONLY JSON, no markdown:\n{"article":{"headline":"SEO headline under 60 chars","subheadline":"one sentence","body":"4+ paragraphs with ## subheadings, \\n\\n between paragraphs"},"yoast":{"focusKeyphrase":"2-4 words","seoTitle":"under 60 chars","metaDescription":"under 155 chars with CTA","slug":"url-friendly-slug"}}`;
+            const r = await fetch("/api/anthropic", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ model: "claude-sonnet-4-5", max_tokens: 4000, tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 2 }], messages: [{ role: "user", content: prompt }] })
+            });
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            const d = await r.json();
+            if (d.error) throw new Error(d.error.message || JSON.stringify(d.error));
+            const textBlocks = d.content?.filter(b => b.type === "text") || [];
+            const raw = textBlocks.map(b => b.text).join("\n");
+            const m = raw.match(/\{[\s\S]*\}/);
+            if (!m) throw new Error("No JSON in response");
+            const parsed = JSON.parse(m[0]);
+            // Enforce 60 char headline limit by truncating if needed
+            if (parsed.article?.headline && parsed.article.headline.length > 60) {
+              parsed.article.headline = parsed.article.headline.substring(0, 57).trim() + "...";
+            }
+            if (parsed.yoast?.seoTitle && parsed.yoast.seoTitle.length > 60) {
+              parsed.yoast.seoTitle = parsed.yoast.seoTitle.substring(0, 57).trim() + "...";
+            }
+            if (parsed.article?.body) {
+              parsed.article.body = parsed.article.body.replace(/<\/?cite[^>]*>/gi, "").replace(/[ \t]+/g, " ").replace(/ ([.,!?])/g, "$1").trim();
+            }
+            newArticles.push({ tweet, article: parsed.article, yoast: parsed.yoast, assignedAuthor, accountId: account.id, handle: account.handle, topic: account.topic, id: `${account.id}-${tweet.tweetId}` });
+            newUsedIds.push(tweet.tweetId);
+            success = true;
+          } catch (e) {
+            console.error(`Tweet ${i + 1} attempt ${attempts} failed:`, e.message);
+            if (attempts >= 2) {
+              failedCount++;
+              failedReasons.push(`Tweet ${i + 1}: ${e.message}`);
+            }
           }
-          newArticles.push({ tweet, article: parsed.article, yoast: parsed.yoast, assignedAuthor, accountId: account.id, handle: account.handle, topic: account.topic, id: `${account.id}-${tweet.tweetId}` });
-          newUsedIds.push(tweet.tweetId);
-        } catch (e) { console.error(`Failed for tweet ${i}:`, e); }
+        }
       }
 
       const updated = accounts.map(a => a.id === account.id ? { ...a, lastChecked: new Date().toISOString(), usedTweetIds: newUsedIds, queue: [...(a.queue || []), ...newArticles] } : a);
       saveAccounts(updated);
       setTweetSelection(null);
       setActiveTab("queue");
+      if (failedCount > 0) {
+        setError(`Generated ${newArticles.length} articles. ${failedCount} failed: ${failedReasons.slice(0, 2).join(" | ")}`);
+      }
     } catch (e) { setError(`Failed: ${e.message}`); }
     finally { setLoadingId(null); setGeneratingProgress({ current: 0, total: 0 }); }
   };
@@ -553,7 +577,7 @@ export default function App() {
     if (!activeArticle || !editPrompt.trim()) return;
     setEditingArticle(true);
     try {
-      const prompt = `Here is the current article:\n\nHeadline: ${activeArticle.article.headline}\nSubheadline: ${activeArticle.article.subheadline}\nBody:\n${activeArticle.article.body}\n\nCurrent Yoast SEO fields:\nFocus Keyphrase: ${activeArticle.yoast?.focusKeyphrase || ""}\nSEO Title: ${activeArticle.yoast?.seoTitle || ""}\nMeta Description: ${activeArticle.yoast?.metaDescription || ""}\nSlug: ${activeArticle.yoast?.slug || ""}\n\nUser request: ${editPrompt}\n\nUse web search if you need current information. CRITICAL: Do NOT include any HTML tags, citation markers like cite tags, or reference indices in the article body. The body must be clean prose only with no XML or HTML. Then rewrite the article based on the user's request. Update Yoast SEO fields if relevant.\n\nReturn ONLY JSON, no markdown:\n{"article":{"headline":"","subheadline":"","body":"4+ paragraphs with ## subheadings, \\n\\n between paragraphs"},"yoast":{"focusKeyphrase":"","seoTitle":"","metaDescription":"","slug":""}}`;
+      const prompt = `Here is the current article:\n\nHeadline: ${activeArticle.article.headline}\nSubheadline: ${activeArticle.article.subheadline}\nBody:\n${activeArticle.article.body}\n\nCurrent Yoast SEO fields:\nFocus Keyphrase: ${activeArticle.yoast?.focusKeyphrase || ""}\nSEO Title: ${activeArticle.yoast?.seoTitle || ""}\nMeta Description: ${activeArticle.yoast?.metaDescription || ""}\nSlug: ${activeArticle.yoast?.slug || ""}\n\nUser request: ${editPrompt}\n\nUse web search if you need current information. CRITICAL CONSTRAINTS:\n- Headline MUST be SEO-optimized AND under 60 characters (count them!).\n- SEO title MUST be under 60 characters.\n- Meta description MUST be under 155 characters with a clear CTA.\n- Do NOT include any HTML tags, citation markers like cite tags, or reference indices in the article body.\n- The body must be clean prose only with no XML or HTML. Then rewrite the article based on the user's request. Update Yoast SEO fields if relevant.\n\nReturn ONLY JSON, no markdown:\n{"article":{"headline":"","subheadline":"","body":"4+ paragraphs with ## subheadings, \\n\\n between paragraphs"},"yoast":{"focusKeyphrase":"","seoTitle":"","metaDescription":"","slug":""}}`;
 
       const r = await fetch("/api/anthropic", {
         method: "POST", headers: { "Content-Type": "application/json" },

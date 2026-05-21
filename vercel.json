@@ -1,0 +1,10 @@
+{
+  "functions": {
+    "api/anthropic.js": {
+      "maxDuration": 60
+    },
+    "api/rss.js": {
+      "maxDuration": 30
+    }
+  }
+}
