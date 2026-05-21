@@ -598,6 +598,14 @@ export default function App() {
     if (activeArticle?.id === articleId) setActiveArticle(null);
   };
 
+  const clearAllQueue = () => {
+    if (!confirm(`Delete all ${totalQueued} queued articles? This cannot be undone.`)) return;
+    const updatedAccounts = accounts.map(a => ({ ...a, queue: [] }));
+    saveAccounts(updatedAccounts);
+    setActiveArticle(null);
+    setPublishStatus(null);
+  };
+
   const copyArticle = (articleData) => {
     navigator.clipboard.writeText(articleData.article.headline + "\n\n" + articleData.article.subheadline + "\n\n" + articleData.article.body);
     setCopied(true);
@@ -867,8 +875,15 @@ export default function App() {
           {activeTab === "queue" && (
             <div style={{ padding: "1.25rem", animation: "fadeIn 0.2s ease" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
-                <p style={{ fontFamily: "'Poppins', sans-serif", fontSize: "1rem", fontWeight: 800, color: "#0a2540", textTransform: "uppercase", letterSpacing: "0.08em" }}>Article Queue</p>
-                {totalQueued > 0 && <span style={{ background: "#f5c842", color: "#0a2540", borderRadius: "12px", padding: "2px 9px", fontSize: "0.82rem", fontFamily: "'Poppins', sans-serif", fontWeight: 800 }}>{totalQueued}</span>}
+                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                  <p style={{ fontFamily: "'Poppins', sans-serif", fontSize: "1rem", fontWeight: 800, color: "#0a2540", textTransform: "uppercase", letterSpacing: "0.08em" }}>Article Queue</p>
+                  {totalQueued > 0 && <span style={{ background: "#f5c842", color: "#0a2540", borderRadius: "12px", padding: "2px 9px", fontSize: "0.82rem", fontFamily: "'Poppins', sans-serif", fontWeight: 800 }}>{totalQueued}</span>}
+                </div>
+                {totalQueued > 0 && (
+                  <button onClick={clearAllQueue} style={{ padding: "7px 12px", border: "1.5px solid #c0392b", borderRadius: "6px", cursor: "pointer", background: "transparent", color: "#c0392b", fontFamily: "'Lora', serif", fontSize: "0.85rem", fontWeight: 700, display: "flex", alignItems: "center", gap: "5px" }}>
+                    <Icons.Trash /> Delete All
+                  </button>
+                )}
               </div>
               {totalQueued === 0 ? (
                 <div style={{ textAlign: "center", padding: "3rem 1rem", color: "#0a2540" }}>
