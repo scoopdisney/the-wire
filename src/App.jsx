@@ -21,11 +21,21 @@ function timeAgo(dateStr) {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
-function bodyToHtml(body) {
-  return body.split("\n\n").map(block => {
-    if (block.startsWith("## ")) return `<h2>${block.replace("## ", "")}</h2>`;
-    return `<p>${block}</p>`;
+function bodyToHtml(body, tweet, handle) {
+  const strip = (t) => t.replace(/<\/?cite[^>]*>/gi, "").replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+  let embed = "";
+  if (tweet && handle && tweet.tweetId && !tweet.tweetId.startsWith("manual-")) {
+    const tweetUrl = tweet.link || `https://twitter.com/${handle}/status/${tweet.tweetId}`;
+    embed = `<!-- wp:embed {"url":"${tweetUrl}","type":"rich","providerNameSlug":"twitter","responsive":true} -->\n<figure class="wp-block-embed is-type-rich is-provider-twitter wp-block-embed-twitter"><div class="wp-block-embed__wrapper">${tweetUrl}</div></figure>\n<!-- /wp:embed -->\n`;
+  } else if (tweet) {
+    // Manual tweet or no ID - show as a styled blockquote
+    embed = `<blockquote class="wp-block-quote"><p>${strip(tweet.text)}</p><cite>@${handle || "Twitter"}</cite></blockquote>\n`;
+  }
+  const articleBody = body.split("\n\n").map(block => {
+    if (block.startsWith("## ")) return `<h2>${strip(block.replace("## ", ""))}</h2>`;
+    return `<p>${strip(block)}</p>`;
   }).join("\n");
+  return embed + articleBody;
 }
 
 function resolveAuthor(topic, topicAuthors) {
@@ -293,7 +303,7 @@ export default function App() {
         setGeneratingProgress({ current: i + 1, total: selectedTweets.length });
         const tweet = selectedTweets[i];
         try {
-          const prompt = `Write a complete editorial article based on this tweet from @${account.handle} about "${account.topic}":\n\nTweet: "${tweet.text}"\nDate: ${tweet.date}\n\nFirst, use web search to verify the facts and find current, accurate information related to this tweet. Then write the article using verified information. Include background, analysis, and what it means for fans. Plus generate Yoast SEO fields.\n\nReturn ONLY JSON, no markdown:\n{"article":{"headline":"","subheadline":"","body":"4+ paragraphs with ## subheadings, \\n\\n between paragraphs"},"yoast":{"focusKeyphrase":"2-4 words","seoTitle":"under 60 chars","metaDescription":"under 155 chars with CTA","slug":"url-friendly-slug"}}`;
+          const prompt = `Write a complete editorial article based on this tweet from @${account.handle} about "${account.topic}":\n\nTweet: "${tweet.text}"\nDate: ${tweet.date}\n\nFirst, use web search to verify the facts and find current, accurate information related to this tweet. Then write the article using verified information. Include background, analysis, and what it means for fans. Plus generate Yoast SEO fields. CRITICAL: Do NOT include any HTML tags, citation markers like cite tags, or reference indices in the article body. The body must be clean prose only with no XML or HTML.\n\nReturn ONLY JSON, no markdown:\n{"article":{"headline":"","subheadline":"","body":"4+ paragraphs with ## subheadings, \\n\\n between paragraphs"},"yoast":{"focusKeyphrase":"2-4 words","seoTitle":"under 60 chars","metaDescription":"under 155 chars with CTA","slug":"url-friendly-slug"}}`;
           const r = await fetch("/api/anthropic", {
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ model: "claude-sonnet-4-5", max_tokens: 4000, tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }], messages: [{ role: "user", content: prompt }] })
@@ -306,6 +316,9 @@ export default function App() {
           const m = raw.match(/\{[\s\S]*\}/);
           if (!m) continue;
           const parsed = JSON.parse(m[0]);
+          if (parsed.article?.body) {
+            parsed.article.body = parsed.article.body.replace(/<\/?cite[^>]*>/gi, "").replace(/\s+/g, " ").replace(/ ([.,!?])/g, "$1").trim();
+          }
           newArticles.push({ tweet, article: parsed.article, yoast: parsed.yoast, assignedAuthor, accountId: account.id, handle: account.handle, topic: account.topic, id: `${account.id}-${tweet.tweetId}` });
           newUsedIds.push(tweet.tweetId);
         } catch (e) { console.error(`Failed for tweet ${i}:`, e); }
@@ -358,7 +371,7 @@ export default function App() {
       const yoast = articleData.yoast || {};
       const body = {
         title: articleData.article.headline,
-        content: bodyToHtml(articleData.article.body),
+        content: bodyToHtml(articleData.article.body, articleData.tweet, articleData.handle),
         excerpt: articleData.article.subheadline,
         slug: yoast.slug || "",
         status: "draft",
@@ -397,7 +410,7 @@ export default function App() {
       const yoast = articleData.yoast || {};
       const postBody = {
         title: articleData.article.headline,
-        content: bodyToHtml(articleData.article.body),
+        content: bodyToHtml(articleData.article.body, articleData.tweet, articleData.handle),
         excerpt: articleData.article.subheadline,
         slug: yoast.slug || "",
         status: "draft",
@@ -432,7 +445,7 @@ export default function App() {
     if (!activeArticle || !editPrompt.trim()) return;
     setEditingArticle(true);
     try {
-      const prompt = `Here is the current article:\n\nHeadline: ${activeArticle.article.headline}\nSubheadline: ${activeArticle.article.subheadline}\nBody:\n${activeArticle.article.body}\n\nCurrent Yoast SEO fields:\nFocus Keyphrase: ${activeArticle.yoast?.focusKeyphrase || ""}\nSEO Title: ${activeArticle.yoast?.seoTitle || ""}\nMeta Description: ${activeArticle.yoast?.metaDescription || ""}\nSlug: ${activeArticle.yoast?.slug || ""}\n\nUser request: ${editPrompt}\n\nUse web search if you need current information. Then rewrite the article based on the user's request. Update Yoast SEO fields if relevant.\n\nReturn ONLY JSON, no markdown:\n{"article":{"headline":"","subheadline":"","body":"4+ paragraphs with ## subheadings, \\n\\n between paragraphs"},"yoast":{"focusKeyphrase":"","seoTitle":"","metaDescription":"","slug":""}}`;
+      const prompt = `Here is the current article:\n\nHeadline: ${activeArticle.article.headline}\nSubheadline: ${activeArticle.article.subheadline}\nBody:\n${activeArticle.article.body}\n\nCurrent Yoast SEO fields:\nFocus Keyphrase: ${activeArticle.yoast?.focusKeyphrase || ""}\nSEO Title: ${activeArticle.yoast?.seoTitle || ""}\nMeta Description: ${activeArticle.yoast?.metaDescription || ""}\nSlug: ${activeArticle.yoast?.slug || ""}\n\nUser request: ${editPrompt}\n\nUse web search if you need current information. CRITICAL: Do NOT include any HTML tags, citation markers like cite tags, or reference indices in the article body. The body must be clean prose only with no XML or HTML. Then rewrite the article based on the user's request. Update Yoast SEO fields if relevant.\n\nReturn ONLY JSON, no markdown:\n{"article":{"headline":"","subheadline":"","body":"4+ paragraphs with ## subheadings, \\n\\n between paragraphs"},"yoast":{"focusKeyphrase":"","seoTitle":"","metaDescription":"","slug":""}}`;
 
       const r = await fetch("/api/anthropic", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -445,6 +458,9 @@ export default function App() {
       const m = raw.match(/\{[\s\S]*\}/);
       if (!m) throw new Error("Could not parse response");
       const parsed = JSON.parse(m[0]);
+      if (parsed.article?.body) {
+        parsed.article.body = parsed.article.body.replace(/<\/?cite[^>]*>/gi, "").replace(/\s+/g, " ").replace(/ ([.,!?])/g, "$1").trim();
+      }
 
       const updatedArticle = { ...activeArticle, article: parsed.article, yoast: parsed.yoast };
       setActiveArticle(updatedArticle);
@@ -485,9 +501,11 @@ export default function App() {
   const wpConfigured = (publishMethod === "wpcom" ? wpcomConnected : wpBasicConfigured);
   const totalQueued = allQueued.length;
 
+  const stripTags = (text) => text.replace(/<\/?cite[^>]*>/gi, "").replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
   const renderArticleBody = (body) => body.split("\n\n").map((block, i) => {
-    if (block.startsWith("## ")) return <h3 key={i} style={{ fontFamily: "'Playfair Display', serif", fontSize: "1.05rem", fontWeight: 700, marginTop: "1.5rem", marginBottom: "0.4rem", color: "#1a1a2e" }}>{block.replace("## ", "")}</h3>;
-    return <p key={i} style={{ marginBottom: "0.9rem", lineHeight: 1.75, color: "#2d2d2d", fontSize: "0.92rem" }}>{block}</p>;
+    const cleaned = stripTags(block.replace(/^## /, ""));
+    if (block.startsWith("## ")) return <h3 key={i} style={{ fontFamily: "'Playfair Display', serif", fontSize: "1.05rem", fontWeight: 700, marginTop: "1.5rem", marginBottom: "0.4rem", color: "#1a1a2e" }}>{cleaned}</h3>;
+    return <p key={i} style={{ marginBottom: "0.9rem", lineHeight: 1.75, color: "#2d2d2d", fontSize: "0.92rem" }}>{cleaned}</p>;
   });
 
   return (
@@ -867,4 +885,4 @@ export default function App() {
       )}
     </div>
   );
-}// v3 
+}
