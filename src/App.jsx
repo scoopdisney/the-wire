@@ -22,7 +22,7 @@ function timeAgo(dateStr) {
 }
 
 function bodyToHtml(body, tweet, handle) {
-  const strip = (t) => t.replace(/<\/?cite[^>]*>/gi, "").replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+  const strip = (t) => t.replace(/<\/?cite[^>]*>/gi, "").replace(/<[^>]+>/g, "").replace(/[ \t]+/g, " ").trim();
   let embed = "";
   if (tweet && handle && tweet.tweetId && !tweet.tweetId.startsWith("manual-")) {
     const tweetUrl = tweet.link || `https://twitter.com/${handle}/status/${tweet.tweetId}`;
@@ -319,7 +319,7 @@ export default function App() {
           if (!m) continue;
           const parsed = JSON.parse(m[0]);
           if (parsed.article?.body) {
-            parsed.article.body = parsed.article.body.replace(/<\/?cite[^>]*>/gi, "").replace(/\s+/g, " ").replace(/ ([.,!?])/g, "$1").trim();
+            parsed.article.body = parsed.article.body.replace(/<\/?cite[^>]*>/gi, "").replace(/[ \t]+/g, " ").replace(/ ([.,!?])/g, "$1").trim();
           }
           newArticles.push({ tweet, article: parsed.article, yoast: parsed.yoast, assignedAuthor, accountId: account.id, handle: account.handle, topic: account.topic, id: `${account.id}-${tweet.tweetId}` });
           newUsedIds.push(tweet.tweetId);
@@ -461,7 +461,7 @@ export default function App() {
       if (!m) throw new Error("Could not parse response");
       const parsed = JSON.parse(m[0]);
       if (parsed.article?.body) {
-        parsed.article.body = parsed.article.body.replace(/<\/?cite[^>]*>/gi, "").replace(/\s+/g, " ").replace(/ ([.,!?])/g, "$1").trim();
+        parsed.article.body = parsed.article.body.replace(/<\/?cite[^>]*>/gi, "").replace(/[ \t]+/g, " ").replace(/ ([.,!?])/g, "$1").trim();
       }
 
       const updatedArticle = { ...activeArticle, article: parsed.article, yoast: parsed.yoast };
@@ -503,7 +503,7 @@ export default function App() {
   const wpConfigured = (publishMethod === "wpcom" ? wpcomConnected : wpBasicConfigured);
   const totalQueued = allQueued.length;
 
-  const stripTags = (text) => text.replace(/<\/?cite[^>]*>/gi, "").replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+  const stripTags = (text) => text.replace(/<\/?cite[^>]*>/gi, "").replace(/<[^>]+>/g, "").replace(/[ \t]+/g, " ").trim();
   const renderArticleBody = (body) => body.split("\n\n").map((block, i) => {
     const cleaned = stripTags(block.replace(/^## /, ""));
     if (block.startsWith("## ")) return <h3 key={i} style={{ fontFamily: "'Poppins', sans-serif", fontSize: "1.15rem", fontWeight: 700, marginTop: "1.5rem", marginBottom: "0.4rem", color: "#0a2540" }}>{cleaned}</h3>;
