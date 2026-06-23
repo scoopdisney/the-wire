@@ -5,7 +5,6 @@ const WP_SETTINGS_KEY = "wp_settings";
 const WPCOM_SETTINGS_KEY = "wpcom_settings";
 const AUTHORS_KEY = "topic_authors";
 
-// WordPress.com OAuth config -- replace CLIENT_ID with your actual Client ID from developer.wordpress.com
 const WPCOM_CLIENT_ID = "139851";
 const WPCOM_BLOG_ID = "216018568";
 const WPCOM_REDIRECT_URI = typeof window !== "undefined" ? window.location.origin : "";
@@ -28,7 +27,6 @@ function bodyToHtml(body, tweet, handle) {
     const tweetUrl = tweet.link || `https://twitter.com/${handle}/status/${tweet.tweetId}`;
     embed = `<!-- wp:embed {"url":"${tweetUrl}","type":"rich","providerNameSlug":"twitter","responsive":true} -->\n<figure class="wp-block-embed is-type-rich is-provider-twitter wp-block-embed-twitter"><div class="wp-block-embed__wrapper">${tweetUrl}</div></figure>\n<!-- /wp:embed -->\n`;
   } else if (tweet) {
-    // Manual tweet or no ID - show as a styled blockquote
     embed = `<blockquote class="wp-block-quote"><p>${strip(tweet.text)}</p><cite>@${handle || "Twitter"}</cite></blockquote>\n`;
   }
   const articleBody = body.split("\n\n").map(block => {
@@ -43,6 +41,39 @@ function resolveAuthor(topic, topicAuthors) {
   const lower = topic.toLowerCase();
   const match = topicAuthors.find(ta => lower.includes(ta.keyword.toLowerCase()));
   return match ? match.author : null;
+}
+
+// Parse the ---WIRE ARTICLE--- paste format
+function parseWireFormat(text) {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("---WIRE ARTICLE---")) return null;
+
+  const lines = trimmed.split("\n");
+  const result = {};
+  let contentLines = [];
+  let inContent = false;
+
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim() === "---END WIRE ARTICLE---") break;
+    if (inContent) {
+      contentLines.push(line);
+      continue;
+    }
+    if (line.startsWith("CONTENT:")) {
+      inContent = true;
+      continue;
+    }
+    const colonIdx = line.indexOf(":");
+    if (colonIdx !== -1) {
+      const key = line.substring(0, colonIdx).trim();
+      const value = line.substring(colonIdx + 1).trim();
+      result[key] = value;
+    }
+  }
+
+  result.CONTENT = contentLines.join("\n").trim();
+  return result;
 }
 
 const Icons = {
@@ -60,7 +91,8 @@ const Icons = {
   Tag: () => <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>,
   Copy: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>,
   Queue: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>,
-  CheckBox: ({ checked }) => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="3" fill={checked ? "currentColor" : "none"}/>{checked && <path d="M9 12l2 2 4-4" stroke="#fff" strokeWidth="2.5"/>}</svg>
+  CheckBox: ({ checked }) => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="3" fill={checked ? "currentColor" : "none"}/>{checked && <path d="M9 12l2 2 4-4" stroke="#fff" strokeWidth="2.5"/>}</svg>,
+  Paste: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M16 4h2a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M9 12h6M9 16h4"/></svg>,
 };
 
 const inputStyle = { width: "100%", padding: "10px 12px", marginBottom: "12px", border: "1.5px solid #7eb5d0", borderRadius: "6px", fontFamily: "'Lora', serif", fontSize: "16px", background: "#fff", outline: "none", color: "#0a2540" };
@@ -69,8 +101,8 @@ const labelStyle = { display: "block", fontSize: "0.8rem", textTransform: "upper
 const NAV_TABS = [
   { id: "accounts", label: "Accounts", icon: "Newsletter" },
   { id: "quick", label: "Quick", icon: "Plus" },
+  { id: "paste", label: "Paste", icon: "Paste" },
   { id: "queue", label: "Queue", icon: "Queue" },
-  { id: "authors", label: "Authors", icon: "User" },
   { id: "wordpress", label: "WP", icon: "Settings" },
 ];
 
@@ -84,7 +116,7 @@ export default function App() {
   const [quickTopic, setQuickTopic] = useState("");
   const [quickHandle, setQuickHandle] = useState("");
   const [generatingQuick, setGeneratingQuick] = useState(false);
-  const [showManualInput, setShowManualInput] = useState(null); // account.id
+  const [showManualInput, setShowManualInput] = useState(null);
   const [editPrompt, setEditPrompt] = useState("");
   const [editingArticle, setEditingArticle] = useState(false);
   const [activeTab, setActiveTab] = useState("accounts");
@@ -98,10 +130,10 @@ export default function App() {
   const [copied, setCopied] = useState(false);
 
   // Tweet selection state
-  const [tweetSelection, setTweetSelection] = useState(null); // { account, tweets, selectedIds }
+  const [tweetSelection, setTweetSelection] = useState(null);
   const [fetchingTweetsFor, setFetchingTweetsFor] = useState(null);
 
-  // WP settings (Basic Auth, for non-GoDaddy)
+  // WP settings
   const [wpSiteUrl, setWpSiteUrl] = useState("");
   const [wpUsername, setWpUsername] = useState("");
   const [wpAppPassword, setWpAppPassword] = useState("");
@@ -110,16 +142,23 @@ export default function App() {
   const [wpTestResult, setWpTestResult] = useState(null);
   const [wpAuthorIds, setWpAuthorIds] = useState({});
 
-  // WordPress.com OAuth state (for GoDaddy/Jetpack workaround)
+  // WordPress.com OAuth state
   const [wpcomToken, setWpcomToken] = useState("");
   const [wpcomBlogId, setWpcomBlogId] = useState("");
   const [wpcomUser, setWpcomUser] = useState("");
-  const [publishMethod, setPublishMethod] = useState("basic"); // 'basic' or 'wpcom'
+  const [publishMethod, setPublishMethod] = useState("basic");
 
   // Topic authors
   const [topicAuthors, setTopicAuthors] = useState([]);
   const [newKeyword, setNewKeyword] = useState("");
   const [newAuthor, setNewAuthor] = useState("");
+
+  // Paste Article state
+  const [pasteText, setPasteText] = useState("");
+  const [parsedPaste, setParsedPaste] = useState(null);
+  const [pasteError, setPasteError] = useState("");
+  const [publishingPaste, setPublishingPaste] = useState(false);
+  const [pastePublishStatus, setPastePublishStatus] = useState(null);
 
   useEffect(() => {
     const stored = localStorage.getItem(STORAGE_KEY);
@@ -143,18 +182,15 @@ export default function App() {
     const ta = localStorage.getItem(AUTHORS_KEY);
     if (ta) { try { setTopicAuthors(JSON.parse(ta)); } catch {} }
 
-    // Check for OAuth callback in URL hash
     if (typeof window !== "undefined" && window.location.hash.includes("access_token")) {
       const params = new URLSearchParams(window.location.hash.substring(1));
       const token = params.get("access_token");
       let blogId = params.get("blog_id") || params.get("site_id");
-      // Fallback to hardcoded site ID if missing or zero
       if (!blogId || blogId === "0") blogId = WPCOM_BLOG_ID;
       if (token && blogId) {
         const newSettings = { token, blogId, user: "", method: "wpcom" };
         setWpcomToken(token); setWpcomBlogId(blogId); setPublishMethod("wpcom");
         localStorage.setItem(WPCOM_SETTINGS_KEY, JSON.stringify(newSettings));
-        // Get user info
         fetch(`https://public-api.wordpress.com/rest/v1.1/me`, { headers: { Authorization: `Bearer ${token}` } })
           .then(r => r.json()).then(d => {
             if (d.username) {
@@ -162,7 +198,6 @@ export default function App() {
               localStorage.setItem(WPCOM_SETTINGS_KEY, JSON.stringify({ ...newSettings, user: d.username }));
             }
           }).catch(() => {});
-        // Clean URL
         window.history.replaceState({}, document.title, window.location.pathname);
       }
     }
@@ -221,14 +256,13 @@ export default function App() {
     saveAccounts(updated);
   };
 
-    const addTopicAuthor = () => {
+  const addTopicAuthor = () => {
     const kw = newKeyword.trim(); const au = newAuthor.trim();
     if (!kw || !au) return;
     saveTopicAuthors([...topicAuthors, { id: Date.now(), keyword: kw, author: au }]);
     setNewKeyword(""); setNewAuthor("");
   };
 
-  // STEP 1: Fetch tweets only (no article generation yet)
   const fetchTweetsForSelection = async (account, includeUsed = false) => {
     if (!account.rssUrl) {
       setError("This account has no RSS feed URL. Edit the account to add one or use Manual Paste.");
@@ -238,13 +272,11 @@ export default function App() {
     const usedTweetIds = account.usedTweetIds || [];
 
     try {
-      // Fetch RSS feed via a CORS proxy
       const proxyUrl = `/api/rss?url=${encodeURIComponent(account.rssUrl)}`;
       const res = await fetch(proxyUrl);
       if (!res.ok) throw new Error(`RSS fetch failed (${res.status})`);
       const rssText = await res.text();
 
-      // Parse RSS/XML
       const parser = new DOMParser();
       const doc = parser.parseFromString(rssText, "text/xml");
       const items = Array.from(doc.querySelectorAll("item, entry"));
@@ -258,11 +290,9 @@ export default function App() {
         const pubDate = item.querySelector("pubDate, published, updated")?.textContent || "";
         const guid = item.querySelector("guid, id")?.textContent || link || `${account.id}-${idx}`;
 
-        // Extract tweet ID from URL if present
         const idMatch = link.match(/status\/(\d+)/);
         const tweetId = idMatch ? idMatch[1] : guid.replace(/[^0-9]/g, "").substring(0, 19) || `${Date.now()}${idx}`;
 
-        // Strip HTML from description and use as tweet text
         const tmp = document.createElement("div");
         tmp.innerHTML = description || title;
         const text = (tmp.textContent || tmp.innerText || title).trim().substring(0, 500);
@@ -285,7 +315,6 @@ export default function App() {
     }
   };
 
-  // Manual tweet entry -- creates a single tweet from pasted text
   const submitManualTweet = async (account) => {
     if (!manualTweetText.trim()) return;
     const manualTweet = {
@@ -299,7 +328,6 @@ export default function App() {
     setShowManualInput(null);
   };
 
-  // STEP 2: Generate articles only for selected tweets
   const generateSelectedArticles = async () => {
     if (!tweetSelection || tweetSelection.selectedIds.size === 0) return;
     const account = tweetSelection.account;
@@ -320,7 +348,6 @@ export default function App() {
         const tweet = selectedTweets[i];
         let attempts = 0;
         let success = false;
-        // Wait 3 seconds between each tweet to avoid rate limits
         if (i > 0) await sleep(3000);
         while (attempts < 4 && !success) {
           attempts++;
@@ -331,9 +358,7 @@ export default function App() {
               body: JSON.stringify({ model: "claude-sonnet-4-5", max_tokens: 4000, tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 2 }], messages: [{ role: "user", content: prompt }] })
             });
             if (r.status === 429) {
-              // Rate limited - wait progressively longer
               const waitMs = attempts * 8000;
-              console.log(`Rate limited, waiting ${waitMs}ms before retry...`);
               await sleep(waitMs);
               throw new Error(`Rate limited (will retry)`);
             }
@@ -345,7 +370,6 @@ export default function App() {
             const m = raw.match(/\{[\s\S]*\}/);
             if (!m) throw new Error("No JSON in response");
             const parsed = JSON.parse(m[0]);
-            // Enforce 60 char headline limit by truncating if needed
             if (parsed.article?.headline && parsed.article.headline.length > 60) {
               parsed.article.headline = parsed.article.headline.substring(0, 57).trim() + "...";
             }
@@ -359,7 +383,6 @@ export default function App() {
             newUsedIds.push(tweet.tweetId);
             success = true;
           } catch (e) {
-            console.error(`Tweet ${i + 1} attempt ${attempts} failed:`, e.message);
             if (attempts >= 4) {
               failedCount++;
               failedReasons.push(`Tweet ${i + 1}: ${e.message}`);
@@ -411,7 +434,6 @@ export default function App() {
     return null;
   };
 
-  // Publishes via WordPress.com API (bypasses GoDaddy restrictions)
   const publishToWordPressCom = async (articleData) => {
     setPublishingId(articleData.id); setPublishStatus(null);
     try {
@@ -445,7 +467,6 @@ export default function App() {
     finally { setPublishingId(null); }
   };
 
-  // Publishes via direct Basic Auth (for hosts that allow it)
   const publishToWordPressBasic = async (articleData) => {
     const wp = localStorage.getItem(WP_SETTINGS_KEY);
     if (!wp) { setPublishStatus({ type: "error", message: "WordPress not configured." }); return; }
@@ -487,7 +508,6 @@ export default function App() {
     finally { setPublishingId(null); }
   };
 
-  // Quick standalone article from pasted tweet (not tied to an account)
   const generateQuickArticle = async () => {
     if (!quickTweetText.trim() || !quickTopic.trim()) {
       setError("Please provide tweet content or URL, and a topic.");
@@ -497,7 +517,6 @@ export default function App() {
     setError("");
     const assignedAuthor = resolveAuthor(quickTopic, topicAuthors);
 
-    // Detect if input is a tweet URL and try to fetch its text
     let tweetText = quickTweetText.trim();
     let detectedHandle = quickHandle.replace(/^@/, "").trim();
     let tweetLink = "";
@@ -510,25 +529,20 @@ export default function App() {
       tweetId = urlMatch[2];
       if (!detectedHandle) detectedHandle = urlHandle;
       try {
-        // Use Twitter oEmbed via proxy
         const oembedUrl = `https://publish.twitter.com/oembed?url=${encodeURIComponent(tweetLink)}&omit_script=true`;
         const proxyUrl = `/api/rss?url=${encodeURIComponent(oembedUrl)}`;
         const res = await fetch(proxyUrl);
         if (res.ok) {
           const data = await res.json();
           if (data.html) {
-            // Strip HTML and extract just the tweet text
             const tmp = document.createElement("div");
             tmp.innerHTML = data.html;
-            // Tweet text is usually in the first <p> tag
             const p = tmp.querySelector("p");
             tweetText = p ? (p.textContent || p.innerText).trim() : tmp.textContent.trim();
-            // Remove the trailing "— Author Name (@handle) Date" line
             tweetText = tweetText.replace(/\s*[—–-]\s*[^()]+\(@[^)]+\)\s*[\w\s,]+\d{4}\s*$/i, "").trim();
           }
         }
       } catch (e) {
-        console.error("Failed to fetch tweet text:", e);
         setError("Could not fetch tweet from URL. You can paste the tweet text directly instead.");
         setGeneratingQuick(false);
         return;
@@ -563,7 +577,6 @@ export default function App() {
       const articleId = `quick-${Date.now()}`;
       const newArticle = { tweet, article: parsed.article, yoast: parsed.yoast, assignedAuthor, accountId: "quick", handle, topic: quickTopic, id: articleId };
 
-      // Add to a "quick" pseudo-account in the queue
       let quickAccount = accounts.find(a => a.id === "quick");
       if (!quickAccount) {
         quickAccount = { id: "quick", handle: "Quick Articles", topic: "Quick", queue: [newArticle], usedTweetIds: [], lastChecked: null };
@@ -573,7 +586,6 @@ export default function App() {
         saveAccounts(updated);
       }
 
-      // Clear form and show article
       setQuickTweetText(""); setQuickTopic(""); setQuickHandle("");
       setActiveArticle(newArticle);
     } catch (e) {
@@ -583,7 +595,6 @@ export default function App() {
     }
   };
 
-    // Edit article via chat prompt
   const editArticleWithPrompt = async () => {
     if (!activeArticle || !editPrompt.trim()) return;
     setEditingArticle(true);
@@ -608,7 +619,6 @@ export default function App() {
       const updatedArticle = { ...activeArticle, article: parsed.article, yoast: parsed.yoast };
       setActiveArticle(updatedArticle);
 
-      // Update in queue too
       const updatedAccounts = accounts.map(a => ({
         ...a,
         queue: (a.queue || []).map(item => item.id === activeArticle.id ? updatedArticle : item)
@@ -646,6 +656,148 @@ export default function App() {
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
+
+  // ── PASTE ARTICLE FUNCTIONS ──────────────────────────────────────────────
+  const handleParsePaste = () => {
+    setPasteError("");
+    setParsedPaste(null);
+    setPastePublishStatus(null);
+    const result = parseWireFormat(pasteText);
+    if (!result) {
+      setPasteError("Could not parse. Make sure you paste the full block starting with ---WIRE ARTICLE--- and ending with ---END WIRE ARTICLE---.");
+      return;
+    }
+    if (!result.TITLE) { setPasteError("Missing TITLE field."); return; }
+    if (!result.CONTENT) { setPasteError("Missing CONTENT field."); return; }
+    setParsedPaste(result);
+  };
+
+  const publishPasteToWordPressCom = async () => {
+    if (!parsedPaste) return;
+    setPublishingPaste(true);
+    setPastePublishStatus(null);
+    try {
+      const status = (parsedPaste.STATUS || "pending").toLowerCase();
+      const body = {
+        title: parsedPaste.TITLE || "",
+        content: parsedPaste.CONTENT || "",
+        status,
+        metadata: [
+          { key: "_yoast_wpseo_focuskw", value: parsedPaste.FOCUS_KEYPHRASE || "", operation: "update" },
+          { key: "_yoast_wpseo_title", value: parsedPaste.SEO_TITLE || "", operation: "update" },
+          { key: "_yoast_wpseo_metadesc", value: parsedPaste.META_DESC || "", operation: "update" },
+        ]
+      };
+      if (parsedPaste.AUTHOR_ID) body.author = parseInt(parsedPaste.AUTHOR_ID);
+      if (parsedPaste.CATEGORY) body.categories_by_name = [parsedPaste.CATEGORY];
+      if (parsedPaste.TAGS) body.tags_by_name = parsedPaste.TAGS.split(",").map(t => t.trim()).filter(Boolean);
+
+      const res = await fetch(`https://public-api.wordpress.com/rest/v1.1/sites/${wpcomBlogId}/posts/new`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${wpcomToken}` },
+        body: JSON.stringify(body)
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setPastePublishStatus({ type: "success", message: "Article sent to WordPress!", url: data.URL || `https://wordpress.com/post/${wpcomBlogId}/${data.ID}` });
+        setPasteText("");
+        setParsedPaste(null);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setPastePublishStatus({ type: "error", message: err.message || `Failed (${res.status}).` });
+      }
+    } catch (e) {
+      setPastePublishStatus({ type: "error", message: "Could not reach WordPress.com." });
+    } finally {
+      setPublishingPaste(false);
+    }
+  };
+
+  const publishPasteToWordPressBasic = async () => {
+    if (!parsedPaste) return;
+    const wp = localStorage.getItem(WP_SETTINGS_KEY);
+    if (!wp) { setPastePublishStatus({ type: "error", message: "WordPress not configured." }); return; }
+    const { siteUrl, username, appPassword } = JSON.parse(wp);
+    setPublishingPaste(true);
+    setPastePublishStatus(null);
+    try {
+      const base = siteUrl.replace(/\/$/, "");
+      const creds = btoa(`${username}:${appPassword}`);
+      const status = (parsedPaste.STATUS || "pending").toLowerCase();
+
+      const postBody = {
+        title: parsedPaste.TITLE || "",
+        content: parsedPaste.CONTENT || "",
+        status,
+        meta: {
+          _yoast_wpseo_focuskw: parsedPaste.FOCUS_KEYPHRASE || "",
+          _yoast_wpseo_title: parsedPaste.SEO_TITLE || "",
+          _yoast_wpseo_metadesc: parsedPaste.META_DESC || "",
+        }
+      };
+
+      if (parsedPaste.AUTHOR_ID) postBody.author = parseInt(parsedPaste.AUTHOR_ID);
+
+      // Resolve category slug if provided
+      if (parsedPaste.CATEGORY) {
+        try {
+          const catRes = await fetch(`${base}/wp-json/wp/v2/categories?search=${encodeURIComponent(parsedPaste.CATEGORY)}&per_page=5`, { headers: { Authorization: `Basic ${creds}` } });
+          if (catRes.ok) {
+            const cats = await catRes.json();
+            const match = cats.find(c => c.name.toLowerCase() === parsedPaste.CATEGORY.toLowerCase() || c.slug.toLowerCase() === parsedPaste.CATEGORY.toLowerCase());
+            if (match) postBody.categories = [match.id];
+          }
+        } catch {}
+      }
+
+      // Resolve tags if provided
+      if (parsedPaste.TAGS) {
+        const tagNames = parsedPaste.TAGS.split(",").map(t => t.trim()).filter(Boolean);
+        const tagIds = [];
+        for (const tagName of tagNames) {
+          try {
+            const tagRes = await fetch(`${base}/wp-json/wp/v2/tags?search=${encodeURIComponent(tagName)}&per_page=5`, { headers: { Authorization: `Basic ${creds}` } });
+            if (tagRes.ok) {
+              const tags = await tagRes.json();
+              const match = tags.find(t => t.name.toLowerCase() === tagName.toLowerCase());
+              if (match) tagIds.push(match.id);
+              else {
+                // Create tag if not found
+                const createRes = await fetch(`${base}/wp-json/wp/v2/tags`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Basic ${creds}` }, body: JSON.stringify({ name: tagName }) });
+                if (createRes.ok) { const newTag = await createRes.json(); tagIds.push(newTag.id); }
+              }
+            }
+          } catch {}
+        }
+        if (tagIds.length) postBody.tags = tagIds;
+      }
+
+      const res = await fetch(`${base}/wp-json/wp/v2/posts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Basic ${creds}` },
+        body: JSON.stringify(postBody)
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setPastePublishStatus({ type: "success", message: "Article sent to WordPress!", url: `${base}/wp-admin/post.php?post=${data.id}&action=edit` });
+        setPasteText("");
+        setParsedPaste(null);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setPastePublishStatus({ type: "error", message: err.message || `Failed (${res.status}).` });
+      }
+    } catch (e) {
+      setPastePublishStatus({ type: "error", message: "Could not reach WordPress." });
+    } finally {
+      setPublishingPaste(false);
+    }
+  };
+
+  const publishPasteArticle = () => {
+    if (publishMethod === "wpcom" && wpcomToken) return publishPasteToWordPressCom();
+    return publishPasteToWordPressBasic();
+  };
+  // ── END PASTE ARTICLE FUNCTIONS ──────────────────────────────────────────
 
   const wpBasicConfigured = wpSaved && wpSiteUrl && wpUsername && wpAppPassword;
   const wpcomConnected = wpcomToken && wpcomBlogId;
@@ -794,7 +946,6 @@ export default function App() {
             <div>{renderArticleBody(activeArticle.article.body)}</div>
           </div>
 
-          {/* Chat-edit box */}
           <div style={{ marginBottom: "1.25rem", padding: "0.9rem 1rem", background: "#F0F8FF", borderRadius: "8px", border: "1.5px solid #c8a84b" }}>
             <label style={{ ...labelStyle, color: "#0a2540" }}>Edit Article with Claude</label>
             <textarea value={editPrompt} onChange={e => setEditPrompt(e.target.value)} placeholder="e.g. 'Change the focus to annual passholders' or 'Look up the current ticket price and add it'" rows={2} style={{ ...inputStyle, marginBottom: "8px", resize: "vertical", fontFamily: "'Lora', serif" }} />
@@ -879,15 +1030,9 @@ export default function App() {
                             <Icons.Refresh spinning={isFetching} />
                             {isFetching ? "Fetching..." : "Fetch New Tweets"}
                           </button>
-                          <button onClick={() => fetchTweetsForSelection(account, true)} disabled={isFetching} style={{ padding: "10px 12px", border: "1.5px solid #c8a84b", borderRadius: "6px", cursor: isFetching ? "wait" : "pointer", background: "transparent", color: "#0a2540", fontFamily: "'Lora', serif", fontSize: "0.92rem" }} title="Show all tweets including ones already used">
-                            All
-                          </button>
-                          <button onClick={() => { if (confirm(`Clear history of ${(account.usedTweetIds || []).length} used tweets for @${account.handle}? You can re-fetch and re-draft them after.`)) clearTweetHistory(account.id); }} style={{ padding: "10px 12px", border: "1.5px solid #c8a84b", borderRadius: "6px", cursor: "pointer", background: "transparent", color: "#0a2540", fontFamily: "'Lora', serif", fontSize: "0.92rem" }} title="Clear cache of used tweets">
-                            ↻
-                          </button>
-                          <button onClick={() => setShowManualInput(showManualInput === account.id ? null : account.id)} style={{ padding: "10px 12px", border: "1.5px solid #c8a84b", borderRadius: "6px", cursor: "pointer", background: showManualInput === account.id ? "#f5c842" : "transparent", color: "#0a2540", fontFamily: "'Lora', serif", fontSize: "0.92rem" }} title="Manual paste">
-                            ✍
-                          </button>
+                          <button onClick={() => fetchTweetsForSelection(account, true)} disabled={isFetching} style={{ padding: "10px 12px", border: "1.5px solid #c8a84b", borderRadius: "6px", cursor: isFetching ? "wait" : "pointer", background: "transparent", color: "#0a2540", fontFamily: "'Lora', serif", fontSize: "0.92rem" }} title="Show all tweets including ones already used">All</button>
+                          <button onClick={() => { if (confirm(`Clear history of ${(account.usedTweetIds || []).length} used tweets for @${account.handle}? You can re-fetch and re-draft them after.`)) clearTweetHistory(account.id); }} style={{ padding: "10px 12px", border: "1.5px solid #c8a84b", borderRadius: "6px", cursor: "pointer", background: "transparent", color: "#0a2540", fontFamily: "'Lora', serif", fontSize: "0.92rem" }} title="Clear cache of used tweets">↻</button>
+                          <button onClick={() => setShowManualInput(showManualInput === account.id ? null : account.id)} style={{ padding: "10px 12px", border: "1.5px solid #c8a84b", borderRadius: "6px", cursor: "pointer", background: showManualInput === account.id ? "#f5c842" : "transparent", color: "#0a2540", fontFamily: "'Lora', serif", fontSize: "0.92rem" }} title="Manual paste">✍</button>
                         </div>
                         {showManualInput === account.id && (
                           <div style={{ marginTop: "10px", padding: "10px", background: "#dbeaf4", borderRadius: "6px", border: "1px solid #0a2540" }}>
@@ -906,6 +1051,99 @@ export default function App() {
               {error && <p style={{ color: "#c0392b", fontSize: "0.88rem", marginTop: "10px", fontFamily: "'Lora', serif" }}>{error}</p>}
             </div>
           )}
+
+          {/* ── PASTE ARTICLE TAB ─────────────────────────────────────────── */}
+          {activeTab === "paste" && (
+            <div style={{ padding: "1.25rem", animation: "fadeIn 0.2s ease" }}>
+              <p style={{ fontFamily: "'Poppins', sans-serif", fontSize: "1rem", fontWeight: 800, color: "#0a2540", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: "0.4rem" }}>Paste Article</p>
+              <p style={{ fontSize: "0.85rem", color: "#0a2540", fontFamily: "'Lora', serif", marginBottom: "1.25rem", lineHeight: 1.6 }}>
+                Paste the full <strong>---WIRE ARTICLE---</strong> block from Claude directly below. All fields including SEO info will be sent to WordPress.
+              </p>
+
+              {!parsedPaste ? (
+                <div style={{ padding: "1rem", background: "#dbeaf4", borderRadius: "8px", border: "1px solid #7eb5d0" }}>
+                  <label style={labelStyle}>Paste Article Block</label>
+                  <textarea
+                    value={pasteText}
+                    onChange={e => { setPasteText(e.target.value); setPasteError(""); }}
+                    placeholder={"---WIRE ARTICLE---\nTITLE: ...\nAUTHOR_ID: ...\n...\nCONTENT:\n[html here]\n---END WIRE ARTICLE---"}
+                    rows={12}
+                    style={{ ...inputStyle, marginBottom: "10px", resize: "vertical", fontFamily: "monospace", fontSize: "13px", lineHeight: 1.5 }}
+                  />
+                  {pasteError && <p style={{ color: "#c0392b", fontSize: "0.85rem", marginBottom: "10px", fontFamily: "'Lora', serif" }}>{pasteError}</p>}
+                  <button
+                    onClick={handleParsePaste}
+                    disabled={!pasteText.trim()}
+                    style={{ width: "100%", padding: "13px", background: pasteText.trim() ? "#f5c842" : "#eee", border: "1.5px solid #0a2540", borderRadius: "8px", cursor: pasteText.trim() ? "pointer" : "not-allowed", fontFamily: "'Poppins', sans-serif", fontWeight: 800, fontSize: "1rem", color: pasteText.trim() ? "#0a2540" : "#999", display: "flex", alignItems: "center", justifyContent: "center", gap: "7px", opacity: !pasteText.trim() ? 0.5 : 1 }}
+                  >
+                    <Icons.Article /> Parse Article
+                  </button>
+                </div>
+              ) : (
+                <div style={{ animation: "fadeIn 0.2s ease" }}>
+                  {/* Parsed preview */}
+                  <div style={{ marginBottom: "1rem", padding: "1rem", background: "#f0f7ff", borderRadius: "8px", border: "1.5px solid #b0d4f1", borderLeft: "3px solid #0073aa" }}>
+                    <p style={{ fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: "0.12em", color: "#0073aa", fontFamily: "'Lora', serif", marginBottom: "0.75rem", fontWeight: 700 }}>Parsed Successfully</p>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "7px" }}>
+                      {[
+                        { label: "Title", value: parsedPaste.TITLE },
+                        { label: "Author ID", value: parsedPaste.AUTHOR_ID },
+                        { label: "Category", value: parsedPaste.CATEGORY },
+                        { label: "Tags", value: parsedPaste.TAGS },
+                        { label: "Focus Keyphrase", value: parsedPaste.FOCUS_KEYPHRASE },
+                        { label: "SEO Title", value: parsedPaste.SEO_TITLE },
+                        { label: "Meta Desc", value: parsedPaste.META_DESC },
+                        { label: "Status", value: parsedPaste.STATUS },
+                      ].filter(f => f.value).map(f => (
+                        <div key={f.label} style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}>
+                          <span style={{ fontSize: "0.72rem", textTransform: "uppercase", letterSpacing: "0.07em", color: "#4a8fbe", fontFamily: "'Lora', serif", fontWeight: 700, minWidth: "100px", paddingTop: "2px" }}>{f.label}</span>
+                          <span style={{ fontSize: "0.88rem", color: "#1a2a3a", fontFamily: "'Lora', serif", flex: 1 }}>{f.value}</span>
+                        </div>
+                      ))}
+                      <div style={{ display: "flex", gap: "8px", alignItems: "flex-start", marginTop: "4px" }}>
+                        <span style={{ fontSize: "0.72rem", textTransform: "uppercase", letterSpacing: "0.07em", color: "#4a8fbe", fontFamily: "'Lora', serif", fontWeight: 700, minWidth: "100px", paddingTop: "2px" }}>Content</span>
+                        <span style={{ fontSize: "0.82rem", color: "#1a2a3a", fontFamily: "'Lora', serif", flex: 1, fontStyle: "italic" }}>{parsedPaste.CONTENT.length} characters ready</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {!wpConfigured && (
+                    <div style={{ marginBottom: "1rem", padding: "0.85rem 1rem", background: "#fff8e1", border: "1px solid #f5c842", borderRadius: "8px" }}>
+                      <p style={{ fontSize: "0.88rem", color: "#0a2540", fontFamily: "'Lora', serif" }}>WordPress not connected. Go to the WP tab to connect first.</p>
+                    </div>
+                  )}
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                    <button
+                      onClick={publishPasteArticle}
+                      disabled={publishingPaste || !wpConfigured}
+                      style={{ width: "100%", padding: "14px", border: `1.5px solid ${wpConfigured ? "#0073aa" : "#bbb"}`, borderRadius: "8px", cursor: wpConfigured ? "pointer" : "not-allowed", background: wpConfigured ? "#0073aa" : "#eee", color: wpConfigured ? "#fff" : "#999", fontFamily: "'Poppins', sans-serif", fontWeight: 800, fontSize: "1rem", display: "flex", alignItems: "center", justifyContent: "center", gap: "7px", opacity: publishingPaste ? 0.6 : 1 }}
+                    >
+                      <Icons.WordPress />
+                      {publishingPaste ? "Sending to WordPress..." : `Send to WordPress ${publishMethod === "wpcom" ? "(Jetpack)" : "(Direct)"}`}
+                    </button>
+                    <button
+                      onClick={() => { setParsedPaste(null); setPastePublishStatus(null); }}
+                      style={{ width: "100%", padding: "12px", border: "1.5px solid #c8a84b", borderRadius: "8px", cursor: "pointer", background: "transparent", color: "#0a2540", fontFamily: "'Lora', serif", fontSize: "0.95rem" }}
+                    >
+                      Edit Paste
+                    </button>
+                  </div>
+
+                  {pastePublishStatus && (
+                    <div style={{ marginTop: "1rem", padding: "0.85rem 1rem", background: pastePublishStatus.type === "success" ? "#f0faf0" : "#fdf0ee", border: `1px solid ${pastePublishStatus.type === "success" ? "#a8dba8" : "#e8a99a"}`, borderRadius: "8px", display: "flex", alignItems: "flex-start", gap: "8px" }}>
+                      <span style={{ color: pastePublishStatus.type === "success" ? "#2e7d32" : "#c0392b", marginTop: "1px" }}>{pastePublishStatus.type === "success" ? <Icons.Check /> : <Icons.Xmark />}</span>
+                      <div>
+                        <p style={{ fontSize: "0.92rem", fontFamily: "'Lora', serif", color: pastePublishStatus.type === "success" ? "#2e7d32" : "#c0392b", fontWeight: 700 }}>{pastePublishStatus.message}</p>
+                        {pastePublishStatus.url && <a href={pastePublishStatus.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: "0.85rem", color: "#0073aa", fontFamily: "'Lora', serif", textDecoration: "underline" }}>Open in WordPress Editor →</a>}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+          {/* ── END PASTE ARTICLE TAB ──────────────────────────────────────── */}
 
           {activeTab === "queue" && (
             <div style={{ padding: "1.25rem", animation: "fadeIn 0.2s ease" }}>
@@ -1017,7 +1255,6 @@ export default function App() {
             <div style={{ padding: "1.25rem", animation: "fadeIn 0.2s ease" }}>
               <p style={{ fontFamily: "'Poppins', sans-serif", fontSize: "1rem", fontWeight: 800, color: "#0a2540", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: "0.4rem" }}>WordPress Connection</p>
 
-              {/* Method toggle */}
               <div style={{ display: "flex", gap: "8px", marginBottom: "1.25rem", background: "#c4e0f0", padding: "4px", borderRadius: "8px" }}>
                 <button onClick={() => setPublishMethod("wpcom")} style={{ flex: 1, padding: "8px", border: "none", borderRadius: "6px", cursor: "pointer", background: publishMethod === "wpcom" ? "#0a2540" : "transparent", color: publishMethod === "wpcom" ? "#f5f0e8" : "#6b5a3e", fontFamily: "'Lora', serif", fontSize: "0.9rem", fontWeight: 700 }}>Jetpack (Recommended)</button>
                 <button onClick={() => setPublishMethod("basic")} style={{ flex: 1, padding: "8px", border: "none", borderRadius: "6px", cursor: "pointer", background: publishMethod === "basic" ? "#0a2540" : "transparent", color: publishMethod === "basic" ? "#f5f0e8" : "#6b5a3e", fontFamily: "'Lora', serif", fontSize: "0.9rem", fontWeight: 700 }}>Direct</button>
@@ -1026,7 +1263,7 @@ export default function App() {
               {publishMethod === "wpcom" ? (
                 <div>
                   <p style={{ fontSize: "0.88rem", color: "#0a2540", fontFamily: "'Lora', serif", marginBottom: "1rem", lineHeight: 1.6 }}>
-                    Connect via Jetpack/WordPress.com. This bypasses host firewalls and works with GoDaddy Managed Hosting. Requires this app to be deployed at a real URL (e.g. Vercel) -- OAuth does not work inside Claude artifacts.
+                    Connect via Jetpack/WordPress.com. This bypasses host firewalls and works with GoDaddy Managed Hosting.
                   </p>
                   {wpcomConnected ? (
                     <div style={{ padding: "1rem", background: "#f0faf0", borderRadius: "8px", border: "1.5px solid #a8dba8", marginBottom: "10px" }}>
@@ -1036,7 +1273,7 @@ export default function App() {
                       <button onClick={disconnectWordPressCom} style={{ marginTop: "10px", padding: "8px 14px", background: "transparent", border: "1.5px solid #c0392b", borderRadius: "5px", cursor: "pointer", color: "#c0392b", fontFamily: "'Lora', serif", fontSize: "0.9rem" }}>Disconnect</button>
                     </div>
                   ) : (
-                    <button onClick={connectWordPressCom} style={{ width: "100%", padding: "14px", background: "#0073aa", border: "1.5px solid #0073aa", borderRadius: "8px", cursor: "pointer", fontFamily: "'Poppins', sans-serif", fontWeight: 800, fontSize: "1rem", color: "#0a2540", display: "flex", alignItems: "center", justifyContent: "center", gap: "7px" }}>
+                    <button onClick={connectWordPressCom} style={{ width: "100%", padding: "14px", background: "#0073aa", border: "1.5px solid #0073aa", borderRadius: "8px", cursor: "pointer", fontFamily: "'Poppins', sans-serif", fontWeight: 800, fontSize: "1rem", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", gap: "7px" }}>
                       <Icons.WordPress /> Connect with WordPress.com
                     </button>
                   )}
@@ -1080,4 +1317,4 @@ export default function App() {
       )}
     </div>
   );
-} 
+}
