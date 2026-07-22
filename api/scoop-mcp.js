@@ -23,8 +23,9 @@ async function wp(method, path, body) {
       redirect: "manual",
       headers: {
         Authorization: wpAuthHeader(),
+        "X-Scoop-Auth": wpAuthHeader().replace("Basic ", ""),
         "Content-Type": "application/json",
-        "User-Agent": "ScoopMCP/2.0",
+        "User-Agent": "ScoopMCP/2.1",
       },
       body: body ? JSON.stringify(body) : undefined,
     });
@@ -264,7 +265,7 @@ async function handleMessage(msg) {
     return rpcResult(id, {
       protocolVersion: (params && params.protocolVersion) || "2025-03-26",
       capabilities: { tools: {} },
-      serverInfo: { name: "scoop-mcp", version: "2.1.0" },
+      serverInfo: { name: "scoop-mcp", version: "2.2.0" },
     });
   }
   if (method === "notifications/initialized" || (method && method.startsWith("notifications/"))) {
