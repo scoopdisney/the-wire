@@ -13,20 +13,40 @@ function wpAuthHeader() {
 }
 
 async function wp(method, path, body) {
-  const res = await fetch(SITE + path, {
-    method,
-    headers: {
-      Authorization: wpAuthHeader(),
-      "Content-Type": "application/json",
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  // Follow redirects manually so the Authorization header is never dropped
+  // (Node's fetch strips auth headers when a site redirects, e.g. to www).
+  let url = SITE + path;
+  let res;
+  for (let hop = 0; hop < 4; hop++) {
+    res = await fetch(url, {
+      method,
+      redirect: "manual",
+      headers: {
+        Authorization: wpAuthHeader(),
+        "Content-Type": "application/json",
+        "User-Agent": "ScoopMCP/2.0",
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const loc = res.headers.get("location");
+    if (res.status >= 300 && res.status < 400 && loc) {
+      url = new URL(loc, url).toString();
+      continue;
+    }
+    break;
+  }
   const text = await res.text();
   let data;
   try { data = JSON.parse(text); } catch { data = text; }
   if (!res.ok) {
     const msg = (data && data.message) ? data.message : String(text).slice(0, 300);
-    throw new Error("WordPress " + res.status + ": " + msg);
+    let extra = "";
+    if (res.status === 401 || res.status === 403) {
+      extra = " [debug: user='" + (process.env.WP_USER || "MISSING") +
+              "', password_set=" + (process.env.WP_APP_PASSWORD ? "yes(len " + process.env.WP_APP_PASSWORD.replace(/ /g, "").length + ")" : "NO") +
+              ", final_url=" + url + "]";
+    }
+    throw new Error("WordPress " + res.status + ": " + msg + extra);
   }
   return data;
 }
@@ -244,7 +264,7 @@ async function handleMessage(msg) {
     return rpcResult(id, {
       protocolVersion: (params && params.protocolVersion) || "2025-03-26",
       capabilities: { tools: {} },
-      serverInfo: { name: "scoop-mcp", version: "2.0.0" },
+      serverInfo: { name: "scoop-mcp", version: "2.1.0" },
     });
   }
   if (method === "notifications/initialized" || (method && method.startsWith("notifications/"))) {
