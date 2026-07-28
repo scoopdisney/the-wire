@@ -61,15 +61,25 @@ export default function RssGenerator() {
     if (tw && !raw.toLowerCase().includes("instagram")) {
       const feeds = [
         {
-          name: "RSSHub (primary)",
-          url: `https://rsshub.app/twitter/user/${tw}`,
-          note: "Usually the most complete free option",
+          name: "rss.app (recommended)",
+          url: null,
+          note: "Most reliable long-term option. Free accounts work. Create once and the feed stays stable.",
+          actionUrl: "https://rss.app/rss-feed/create-twitter-rss-feed",
         },
         {
-          name: "rss.app (recommended for production)",
-          url: null,
-          note: "Create a permanent feed at rss.app — most reliable long-term",
-          actionUrl: "https://rss.app/rss-feed/create-twitter-rss-feed",
+          name: "RSSHub · rssforever",
+          url: `https://rsshub.rssforever.com/twitter/user/${tw}`,
+          note: "Public instance — works more often than the main one",
+        },
+        {
+          name: "RSSHub · rss.tips",
+          url: `https://rsshub.rss.tips/twitter/user/${tw}`,
+          note: "Another public instance",
+        },
+        {
+          name: "RSSHub · main (often down)",
+          url: `https://rsshub.app/twitter/user/${tw}`,
+          note: "Frequently returns 404 — keep as last resort",
         },
       ];
       setResult({ platform: "twitter", username: tw, feeds });
@@ -81,15 +91,20 @@ export default function RssGenerator() {
     if (ig) {
       const feeds = [
         {
-          name: "RSSHub + Picuki",
-          url: `https://rsshub.app/picuki/profile/${ig}`,
-          note: "Best free Instagram route right now",
+          name: "rss.app (recommended)",
+          url: null,
+          note: "Instagram is heavily restricted. rss.app is the only consistently working free option.",
+          actionUrl: "https://rss.app",
         },
         {
-          name: "rss.app (most reliable)",
-          url: null,
-          note: "Instagram is heavily restricted — rss.app is the stable choice",
-          actionUrl: "https://rss.app",
+          name: "RSSHub + Picuki · rssforever",
+          url: `https://rsshub.rssforever.com/picuki/profile/${ig}`,
+          note: "Best free Instagram route when the instance is up",
+        },
+        {
+          name: "RSSHub + Picuki · main",
+          url: `https://rsshub.app/picuki/profile/${ig}`,
+          note: "Often down",
         },
       ];
       setResult({ platform: "instagram", username: ig, feeds });
@@ -126,7 +141,7 @@ export default function RssGenerator() {
 
       setPreviewItems(parsed);
     } catch (e) {
-      setError(`Preview failed: ${e.message}. The public instance may be down — try the rss.app option.`);
+      setError(`Preview failed: ${e.message}. Free public instances go down often — use the rss.app option for a permanent feed.`);
     } finally {
       setLoading(false);
     }
@@ -149,7 +164,7 @@ export default function RssGenerator() {
       a.click();
       URL.revokeObjectURL(a.href);
     } catch (e) {
-      setError(`Download failed: ${e.message}`);
+      setError(`Download failed: ${e.message}. The free instance is currently down.`);
     } finally {
       setLoading(false);
     }
@@ -184,7 +199,7 @@ export default function RssGenerator() {
         lineHeight: 1.6
       }}>
         Paste any public Instagram or X/Twitter profile link (or just the username).  
-        Generate a feed URL, preview it live, or download the full XML.
+        Free public bridges go down often — for anything important use the rss.app option.
       </p>
 
       {/* Input */}
