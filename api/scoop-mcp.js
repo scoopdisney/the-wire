@@ -25,7 +25,7 @@ async function wp(method, path, body) {
         Authorization: wpAuthHeader(),
         "X-Scoop-Auth": wpAuthHeader().replace("Basic ", ""),
         "Content-Type": "application/json",
-        "User-Agent": "ScoopMCP/2.1",
+        "User-Agent": "ScoopMCP/2.3",
       },
       body: body ? JSON.stringify(body) : undefined,
     });
@@ -48,6 +48,42 @@ async function wp(method, path, body) {
               ", final_url=" + url + "]";
     }
     throw new Error("WordPress " + res.status + ": " + msg + extra);
+  }
+  return data;
+}
+
+async function wpUpload(buf, contentType, filename) {
+  // Binary upload to /media. Same manual-redirect + X-Scoop-Auth handling as wp(),
+  // but with the raw file body and a Content-Disposition filename.
+  let url = SITE + "/media";
+  let res;
+  const safeName = String(filename || "upload").replace(/[^\w.\-]/g, "_");
+  for (let hop = 0; hop < 4; hop++) {
+    res = await fetch(url, {
+      method: "POST",
+      redirect: "manual",
+      headers: {
+        Authorization: wpAuthHeader(),
+        "X-Scoop-Auth": wpAuthHeader().replace("Basic ", ""),
+        "Content-Type": contentType,
+        "Content-Disposition": 'attachment; filename="' + safeName + '"',
+        "User-Agent": "ScoopMCP/2.3",
+      },
+      body: buf,
+    });
+    const loc = res.headers.get("location");
+    if (res.status >= 300 && res.status < 400 && loc) {
+      url = new URL(loc, url).toString();
+      continue;
+    }
+    break;
+  }
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = text; }
+  if (!res.ok) {
+    const msg = (data && data.message) ? data.message : String(text).slice(0, 300);
+    throw new Error("WordPress media " + res.status + ": " + msg);
   }
   return data;
 }
@@ -167,6 +203,22 @@ const TOOLS = [
     },
   },
   {
+    name: "scoop_upload_media",
+    description: "Upload a file to the TheDisneyScoop.com media library FROM A PUBLIC URL. The server fetches the file and uploads it at full resolution, so no base64 passes through chat. Ideal for official Disney press images (Disney Parks Blog, D23). Returns media_id and source_url; use source_url in post markup or media_id as a featured image. Do not rehost other outlets' or agency photos.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        image_url: { type: "string", description: "Direct public URL of the image/file, e.g. a disneyparksblog.com wp-content upload URL" },
+        filename: { type: "string", description: "Filename with extension for the library, e.g. 'tomorrowland-d23-2026.png'. Defaults to the URL's filename." },
+        title: { type: "string", description: "Media title shown in the library" },
+        alt_text: { type: "string", description: "Alt text for accessibility and SEO" },
+        caption: { type: "string", description: "Caption, e.g. photo credit '(Disney)'" },
+        post_id: { type: "number", description: "Optional post ID to attach the media to" },
+      },
+      required: ["image_url"],
+    },
+  },
+  {
     name: "scoop_trash_post",
     description: "Move a post to trash (recoverable in wp-admin for 30 days). Confirm with the user before calling.",
     inputSchema: {
@@ -245,6 +297,39 @@ async function runTool(name, a) {
       const p = await wp("POST", "/posts/" + a.post_id, body);
       return { ...postSummary(p), updated_fields: Object.keys(body) };
     }
+    case "scoop_upload_media": {
+      const r = await fetch(a.image_url, {
+        headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36" },
+      });
+      if (!r.ok) throw new Error("Could not fetch source file: HTTP " + r.status + " from " + a.image_url);
+      const contentType = (r.headers.get("content-type") || "application/octet-stream").split(";")[0].trim();
+      const buf = Buffer.from(await r.arrayBuffer());
+      if (buf.length > 40 * 1024 * 1024) {
+        throw new Error("File is " + Math.round(buf.length / 1048576) + "MB; over the 40MB safety cap.");
+      }
+      let filename = a.filename;
+      if (!filename) {
+        try { filename = decodeURIComponent(new URL(a.image_url).pathname.split("/").pop()) || "upload"; }
+        catch { filename = "upload"; }
+      }
+      const media = await wpUpload(buf, contentType, filename);
+      const patch = {};
+      if (a.title) patch.title = a.title;
+      if (a.alt_text) patch.alt_text = a.alt_text;
+      if (a.caption) patch.caption = a.caption;
+      if (a.post_id) patch.post = a.post_id;
+      let final = media;
+      if (Object.keys(patch).length) final = await wp("POST", "/media/" + media.id, patch);
+      return {
+        media_id: final.id,
+        source_url: final.source_url,
+        mime_type: final.mime_type,
+        file_size_bytes: buf.length,
+        title: final.title && (final.title.raw ?? final.title.rendered),
+        alt_text: final.alt_text,
+        link: final.link,
+      };
+    }
     case "scoop_trash_post": {
       const p = await wp("DELETE", "/posts/" + a.post_id);
       return { id: p.id, status: p.status, note: "Moved to trash; recoverable in wp-admin for 30 days." };
@@ -265,7 +350,7 @@ async function handleMessage(msg) {
     return rpcResult(id, {
       protocolVersion: (params && params.protocolVersion) || "2025-03-26",
       capabilities: { tools: {} },
-      serverInfo: { name: "scoop-mcp", version: "2.2.0" },
+      serverInfo: { name: "scoop-mcp", version: "2.3.0" },
     });
   }
   if (method === "notifications/initialized" || (method && method.startsWith("notifications/"))) {
