@@ -1,4 +1,5 @@
 // TheDisneyScoop MCP server — Application Password edition (permanent auth)
+// v2.4.0: multi-category (names or IDs, csv), featured_media on publish/update, upload-with-post_id sets featured.
 // Auth to WordPress: Basic auth with WP_USER + WP_APP_PASSWORD (never expires)
 // Auth to this endpoint: ?key= must match MCP_KEY
 // Replaces the old WPCOM_TOKEN bearer-token version.
@@ -25,7 +26,7 @@ async function wp(method, path, body) {
         Authorization: wpAuthHeader(),
         "X-Scoop-Auth": wpAuthHeader().replace("Basic ", ""),
         "Content-Type": "application/json",
-        "User-Agent": "ScoopMCP/2.3",
+        "User-Agent": "ScoopMCP/2.4",
       },
       body: body ? JSON.stringify(body) : undefined,
     });
@@ -67,7 +68,7 @@ async function wpUpload(buf, contentType, filename) {
         "X-Scoop-Auth": wpAuthHeader().replace("Basic ", ""),
         "Content-Type": contentType,
         "Content-Disposition": 'attachment; filename="' + safeName + '"',
-        "User-Agent": "ScoopMCP/2.3",
+        "User-Agent": "ScoopMCP/2.4",
       },
       body: buf,
     });
@@ -101,6 +102,19 @@ async function resolveCategory(name) {
   const hit = cats.find(c => c.name.toLowerCase() === name.toLowerCase()) || cats[0];
   if (!hit) throw new Error("Category not found: " + name);
   return hit.id;
+}
+
+// v2.4.0: accepts a comma-separated list of category NAMES and/or numeric IDs,
+// e.g. "News, Disney Parks, Food" or "16,6,8". Returns an array of IDs in order.
+async function resolveCategories(csv) {
+  if (!csv) return null;
+  const parts = String(csv).split(",").map(t => t.trim()).filter(Boolean);
+  const ids = [];
+  for (const part of parts) {
+    if (/^\d+$/.test(part)) { ids.push(parseInt(part, 10)); continue; }
+    ids.push(await resolveCategory(part));
+  }
+  return ids.length ? [...new Set(ids)] : null;
 }
 
 async function resolveTags(csv) {
@@ -172,7 +186,8 @@ const TOOLS = [
         content: { type: "string", description: "Full post body as Gutenberg/HTML markup" },
         status: { type: "string", default: "pending", description: "draft | pending | publish | future" },
         date_iso: { type: "string", description: "ISO8601 datetime, required only for status=future" },
-        category: { type: "string", description: "Category name, e.g. 'Disneyland Resort'" },
+        category: { type: "string", description: "Comma-separated category names and/or numeric IDs, e.g. 'News, Disney Parks, Food' or '16,6,8'" },
+        featured_media: { type: "number", description: "Media ID to set as the featured image" },
         tags_csv: { type: "string", description: "Comma-separated tag names; missing tags are created" },
         author_id: { type: "number", description: "Numeric author ID on the site" },
         seo_title: { type: "string", description: "Yoast SEO title" },
@@ -192,7 +207,8 @@ const TOOLS = [
         title: { type: "string" },
         content: { type: "string", description: "Full replacement body (Gutenberg/HTML)" },
         status: { type: "string", description: "draft | pending | publish" },
-        category: { type: "string", description: "Category name; replaces existing categories" },
+        category: { type: "string", description: "Comma-separated category names and/or numeric IDs, e.g. 'News, Disney Parks, Food' or '16,6,8'; replaces existing categories" },
+        featured_media: { type: "number", description: "Media ID to set as the featured image" },
         tags_csv: { type: "string", description: "Comma-separated tags; replaces existing tags" },
         author_id: { type: "number" },
         seo_title: { type: "string" },
@@ -213,7 +229,8 @@ const TOOLS = [
         title: { type: "string", description: "Media title shown in the library" },
         alt_text: { type: "string", description: "Alt text for accessibility and SEO" },
         caption: { type: "string", description: "Caption, e.g. photo credit '(Disney)'" },
-        post_id: { type: "number", description: "Optional post ID to attach the media to" },
+        post_id: { type: "number", description: "Optional post ID to attach the media to. When given, the upload is ALSO set as that post's featured image (unless set_featured is false)." },
+        set_featured: { type: "boolean", default: true, description: "With post_id: set the uploaded media as the post's featured image (default true)" },
       },
       required: ["image_url"],
     },
@@ -273,8 +290,9 @@ async function runTool(name, a) {
         body.date = a.date_iso;
       }
       if (a.author_id) body.author = a.author_id;
-      const cat = await resolveCategory(a.category);
-      if (cat) body.categories = [cat];
+      const cats = await resolveCategories(a.category);
+      if (cats) body.categories = cats;
+      if (a.featured_media) body.featured_media = Number(a.featured_media);
       const tags = await resolveTags(a.tags_csv);
       if (tags) body.tags = tags;
       const meta = yoastMeta(a);
@@ -288,8 +306,9 @@ async function runTool(name, a) {
       if (a.content !== undefined) body.content = a.content;
       if (a.status !== undefined) body.status = a.status;
       if (a.author_id !== undefined) body.author = a.author_id;
-      const cat = await resolveCategory(a.category);
-      if (cat) body.categories = [cat];
+      const cats = await resolveCategories(a.category);
+      if (cats) body.categories = cats;
+      if (a.featured_media !== undefined && a.featured_media !== null) body.featured_media = Number(a.featured_media);
       const tags = await resolveTags(a.tags_csv);
       if (tags) body.tags = tags;
       const meta = yoastMeta(a);
@@ -320,8 +339,14 @@ async function runTool(name, a) {
       if (a.post_id) patch.post = a.post_id;
       let final = media;
       if (Object.keys(patch).length) final = await wp("POST", "/media/" + media.id, patch);
+      let featured_set_on = null;
+      if (a.post_id && a.set_featured !== false) {
+        await wp("POST", "/posts/" + a.post_id, { featured_media: media.id });
+        featured_set_on = a.post_id;
+      }
       return {
         media_id: final.id,
+        featured_set_on,
         source_url: final.source_url,
         mime_type: final.mime_type,
         file_size_bytes: buf.length,
@@ -350,7 +375,7 @@ async function handleMessage(msg) {
     return rpcResult(id, {
       protocolVersion: (params && params.protocolVersion) || "2025-03-26",
       capabilities: { tools: {} },
-      serverInfo: { name: "scoop-mcp", version: "2.3.0" },
+      serverInfo: { name: "scoop-mcp", version: "2.4.0" },
     });
   }
   if (method === "notifications/initialized" || (method && method.startsWith("notifications/"))) {
