@@ -1,4 +1,5 @@
 // TheDisneyScoop MCP server — Application Password edition (permanent auth)
+// v2.5.0: slug on publish/update; get returns slug.
 // v2.4.0: multi-category (names or IDs, csv), featured_media on publish/update, upload-with-post_id sets featured.
 // Auth to WordPress: Basic auth with WP_USER + WP_APP_PASSWORD (never expires)
 // Auth to this endpoint: ?key= must match MCP_KEY
@@ -186,6 +187,7 @@ const TOOLS = [
         content: { type: "string", description: "Full post body as Gutenberg/HTML markup" },
         status: { type: "string", default: "pending", description: "draft | pending | publish | future" },
         date_iso: { type: "string", description: "ISO8601 datetime, required only for status=future" },
+        slug: { type: "string", description: "URL slug (post_name), lowercase-hyphenated" },
         category: { type: "string", description: "Comma-separated category names and/or numeric IDs, e.g. 'News, Disney Parks, Food' or '16,6,8'" },
         featured_media: { type: "number", description: "Media ID to set as the featured image" },
         tags_csv: { type: "string", description: "Comma-separated tag names; missing tags are created" },
@@ -205,6 +207,7 @@ const TOOLS = [
       properties: {
         post_id: { type: "number", description: "Existing post ID" },
         title: { type: "string" },
+        slug: { type: "string", description: "URL slug (post_name), lowercase-hyphenated" },
         content: { type: "string", description: "Full replacement body (Gutenberg/HTML)" },
         status: { type: "string", description: "draft | pending | publish" },
         category: { type: "string", description: "Comma-separated category names and/or numeric IDs, e.g. 'News, Disney Parks, Food' or '16,6,8'; replaces existing categories" },
@@ -266,6 +269,8 @@ async function runTool(name, a) {
       const p = await wp("GET", "/posts/" + a.post_id + "?context=edit");
       return {
         ...postSummary(p),
+        slug: p.slug,
+        featured_media: p.featured_media,
         date: p.date,
         author: p.author,
         categories: p.categories,
@@ -289,6 +294,7 @@ async function runTool(name, a) {
         if (!a.date_iso) throw new Error("date_iso is required when status=future");
         body.date = a.date_iso;
       }
+      if (a.slug) body.slug = a.slug;
       if (a.author_id) body.author = a.author_id;
       const cats = await resolveCategories(a.category);
       if (cats) body.categories = cats;
@@ -303,6 +309,7 @@ async function runTool(name, a) {
     case "scoop_update_post": {
       const body = {};
       if (a.title !== undefined) body.title = a.title;
+      if (a.slug) body.slug = a.slug;
       if (a.content !== undefined) body.content = a.content;
       if (a.status !== undefined) body.status = a.status;
       if (a.author_id !== undefined) body.author = a.author_id;
@@ -314,7 +321,7 @@ async function runTool(name, a) {
       const meta = yoastMeta(a);
       if (meta) body.meta = meta;
       const p = await wp("POST", "/posts/" + a.post_id, body);
-      return { ...postSummary(p), updated_fields: Object.keys(body) };
+      return { ...postSummary(p), slug: p.slug, updated_fields: Object.keys(body) };
     }
     case "scoop_upload_media": {
       const r = await fetch(a.image_url, {
@@ -375,7 +382,7 @@ async function handleMessage(msg) {
     return rpcResult(id, {
       protocolVersion: (params && params.protocolVersion) || "2025-03-26",
       capabilities: { tools: {} },
-      serverInfo: { name: "scoop-mcp", version: "2.4.0" },
+      serverInfo: { name: "scoop-mcp", version: "2.5.0" },
     });
   }
   if (method === "notifications/initialized" || (method && method.startsWith("notifications/"))) {
