@@ -1,4 +1,5 @@
 // TheDisneyScoop MCP server — Application Password edition (permanent auth)
+// v2.6.0: scoop_list_users (all site users with roles, incl. zero-post authors).
 // v2.5.0: slug on publish/update; get returns slug.
 // v2.4.0: multi-category (names or IDs, csv), featured_media on publish/update, upload-with-post_id sets featured.
 // Auth to WordPress: Basic auth with WP_USER + WP_APP_PASSWORD (never expires)
@@ -239,6 +240,18 @@ const TOOLS = [
     },
   },
   {
+    name: "scoop_list_users",
+    description: "List ALL user accounts on TheDisneyScoop.com with id, name, slug, username, roles and registration date, INCLUDING authors with zero published posts (the public REST hides those). Use for writer rosters and author scheduling.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        role: { type: "string", description: "Optional role filter: administrator | editor | author | contributor | subscriber" },
+        per_page: { type: "number", default: 100, description: "1-100" },
+        page: { type: "number", default: 1 },
+      },
+    },
+  },
+  {
     name: "scoop_trash_post",
     description: "Move a post to trash (recoverable in wp-admin for 30 days). Confirm with the user before calling.",
     inputSchema: {
@@ -362,6 +375,25 @@ async function runTool(name, a) {
         link: final.link,
       };
     }
+    case "scoop_list_users": {
+      const q = new URLSearchParams({
+        context: "edit",
+        per_page: String(Math.min(Math.max(a.per_page || 100, 1), 100)),
+        page: String(a.page || 1),
+        orderby: "id",
+        order: "asc",
+      });
+      if (a.role) q.set("roles", a.role);
+      const users = await wp("GET", "/users?" + q.toString());
+      return users.map(u => ({
+        id: u.id,
+        name: u.name,
+        slug: u.slug,
+        username: u.username,
+        roles: u.roles,
+        registered: u.registered_date,
+      }));
+    }
     case "scoop_trash_post": {
       const p = await wp("DELETE", "/posts/" + a.post_id);
       return { id: p.id, status: p.status, note: "Moved to trash; recoverable in wp-admin for 30 days." };
@@ -382,7 +414,7 @@ async function handleMessage(msg) {
     return rpcResult(id, {
       protocolVersion: (params && params.protocolVersion) || "2025-03-26",
       capabilities: { tools: {} },
-      serverInfo: { name: "scoop-mcp", version: "2.5.0" },
+      serverInfo: { name: "scoop-mcp", version: "2.6.0" },
     });
   }
   if (method === "notifications/initialized" || (method && method.startsWith("notifications/"))) {
