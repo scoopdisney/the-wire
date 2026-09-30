@@ -1,4 +1,6 @@
 // TheDisneyScoop MCP server — Application Password edition (permanent auth)
+// v2.7.0: scoop_snippets (Code Snippets plugin REST: list/get/create/update/activate/deactivate/delete)
+//         and scoop_custom_css (Appearance > Customize > Additional CSS via the "Scoop MCP Custom CSS" helper snippet).
 // v2.6.0: scoop_list_users (all site users with roles, incl. zero-post authors).
 // v2.5.0: slug on publish/update; get returns slug.
 // v2.4.0: multi-category (names or IDs, csv), featured_media on publish/update, upload-with-post_id sets featured.
@@ -6,7 +8,8 @@
 // Auth to this endpoint: ?key= must match MCP_KEY
 // Replaces the old WPCOM_TOKEN bearer-token version.
 
-const SITE = "https://thedisneyscoop.com/wp-json/wp/v2";
+const ROOT = "https://thedisneyscoop.com/wp-json";
+const SITE = ROOT + "/wp/v2";
 
 function wpAuthHeader() {
   const user = process.env.WP_USER;
@@ -16,9 +19,18 @@ function wpAuthHeader() {
 }
 
 async function wp(method, path, body) {
+  return wpAt(SITE + path, method, body);
+}
+
+// Any REST namespace, e.g. wpr("GET", "/code-snippets/v1/snippets")
+async function wpr(method, path, body) {
+  return wpAt(ROOT + path, method, body);
+}
+
+async function wpAt(startUrl, method, body) {
   // Follow redirects manually so the Authorization header is never dropped
   // (Node's fetch strips auth headers when a site redirects, e.g. to www).
-  let url = SITE + path;
+  let url = startUrl;
   let res;
   for (let hop = 0; hop < 4; hop++) {
     res = await fetch(url, {
@@ -252,6 +264,38 @@ const TOOLS = [
     },
   },
   {
+    name: "scoop_snippets",
+    description: "Manage Code Snippets plugin snippets on TheDisneyScoop.com. action=list returns id, name, active, scope (search filters by name OR code substring). get returns full code. create needs name + code (PHP without the opening <?php tag); scope defaults to global. update changes only supplied fields. activate / deactivate toggle. delete removes the snippet PERMANENTLY: confirm with the user first.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", description: "list | get | create | update | activate | deactivate | delete" },
+        id: { type: "number", description: "Snippet ID (get/update/activate/deactivate/delete)" },
+        search: { type: "string", description: "list: case-insensitive substring matched against name and code" },
+        name: { type: "string" },
+        code: { type: "string", description: "PHP code without <?php" },
+        desc: { type: "string" },
+        scope: { type: "string", description: "global | admin | front-end | single-use | content | head-content | footer-content | site-css | site-footer-js" },
+        active: { type: "boolean" },
+      },
+      required: ["action"],
+    },
+  },
+  {
+    name: "scoop_custom_css",
+    description: "Read or edit Appearance > Customize > Additional CSS on TheDisneyScoop.com (saved as a new revision, so earlier versions stay in the Customizer history). action=get returns the full CSS. action=replace swaps old_text for new_text and fails unless old_text appears exactly once (use new_text='' to remove a block). action=set replaces the entire CSS with css. Requires the 'Scoop MCP Custom CSS' helper snippet to be active.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", description: "get | replace | set" },
+        old_text: { type: "string" },
+        new_text: { type: "string", default: "" },
+        css: { type: "string", description: "set: full replacement CSS" },
+      },
+      required: ["action"],
+    },
+  },
+  {
     name: "scoop_trash_post",
     description: "Move a post to trash (recoverable in wp-admin for 30 days). Confirm with the user before calling.",
     inputSchema: {
@@ -394,6 +438,62 @@ async function runTool(name, a) {
         registered: u.registered_date,
       }));
     }
+    case "scoop_snippets": {
+      const base = "/code-snippets/v1/snippets";
+      const pick = (sn) => ({ id: sn.id, name: sn.name, active: sn.active, scope: sn.scope, modified: sn.modified });
+      const need = () => { if (!a.id) throw new Error("id is required for action=" + a.action); };
+      switch (a.action) {
+        case "list": {
+          const all = await wpr("GET", base);
+          const q = (a.search || "").toLowerCase();
+          const hits = q ? all.filter(sn => (sn.name || "").toLowerCase().includes(q) || (sn.code || "").toLowerCase().includes(q)) : all;
+          return hits.map(pick);
+        }
+        case "get": need(); return await wpr("GET", base + "/" + a.id);
+        case "create": {
+          if (!a.name || !a.code) throw new Error("name and code are required for create");
+          const body = { name: a.name, code: a.code, scope: a.scope || "global", active: a.active !== false };
+          if (a.desc) body.desc = a.desc;
+          const sn = await wpr("POST", base, body);
+          return { ...pick(sn), code_error: sn.code_error || null };
+        }
+        case "update": {
+          need();
+          const body = {};
+          for (const k of ["name", "code", "desc", "scope", "active"]) if (a[k] !== undefined) body[k] = a[k];
+          const sn = await wpr("POST", base + "/" + a.id, body);
+          return { ...pick(sn), code_error: sn.code_error || null, updated_fields: Object.keys(body) };
+        }
+        case "activate": need(); return pick(await wpr("POST", base + "/" + a.id + "/activate"));
+        case "deactivate": need(); return pick(await wpr("POST", base + "/" + a.id + "/deactivate"));
+        case "delete": {
+          need();
+          const before = await wpr("GET", base + "/" + a.id);
+          await wpr("DELETE", base + "/" + a.id);
+          return { deleted: true, id: before.id, name: before.name, code_backup: before.code };
+        }
+        default: throw new Error("Unknown action: " + a.action);
+      }
+    }
+    case "scoop_custom_css": {
+      const path = "/scoop/v1/custom-css";
+      let cur;
+      try { cur = await wpr("GET", path); }
+      catch (e) { throw new Error("Custom CSS route unavailable (" + e.message + "). Create the 'Scoop MCP Custom CSS' helper snippet with scoop_snippets first."); }
+      if (a.action === "get") return cur;
+      let css;
+      if (a.action === "set") {
+        if (typeof a.css !== "string") throw new Error("css is required for set");
+        css = a.css;
+      } else if (a.action === "replace") {
+        if (!a.old_text) throw new Error("old_text is required for replace");
+        const n = cur.css.split(a.old_text).length - 1;
+        if (n !== 1) throw new Error("old_text found " + n + " times; it must match exactly once");
+        css = cur.css.replace(a.old_text, a.new_text || "");
+      } else throw new Error("Unknown action: " + a.action);
+      const out = await wpr("POST", path, { css });
+      return { ...out, before_length: cur.css.length, after_length: css.length, previous_css: cur.css };
+    }
     case "scoop_trash_post": {
       const p = await wp("DELETE", "/posts/" + a.post_id);
       return { id: p.id, status: p.status, note: "Moved to trash; recoverable in wp-admin for 30 days." };
@@ -414,7 +514,7 @@ async function handleMessage(msg) {
     return rpcResult(id, {
       protocolVersion: (params && params.protocolVersion) || "2025-03-26",
       capabilities: { tools: {} },
-      serverInfo: { name: "scoop-mcp", version: "2.6.0" },
+      serverInfo: { name: "scoop-mcp", version: "2.7.0" },
     });
   }
   if (method === "notifications/initialized" || (method && method.startsWith("notifications/"))) {
