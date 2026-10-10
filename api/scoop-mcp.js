@@ -1,4 +1,5 @@
 // TheDisneyScoop MCP server — Application Password edition (permanent auth)
+// v2.8.0: scoop_create_user / scoop_update_user / scoop_delete_user (writer accounts: create with role, bio, generated password; delete reassigns posts).
 // v2.7.0: scoop_snippets (Code Snippets plugin REST: list/get/create/update/activate/deactivate/delete)
 //         and scoop_custom_css (Appearance > Customize > Additional CSS via the "Scoop MCP Custom CSS" helper snippet).
 // v2.6.0: scoop_list_users (all site users with roles, incl. zero-post authors).
@@ -264,6 +265,56 @@ const TOOLS = [
     },
   },
   {
+    name: "scoop_create_user",
+    description: "Create a new user account on TheDisneyScoop.com (a byline writer). Needs display name; username/slug default from the name. Role defaults to 'superauthor' (the site's writer role used by the rotation). A strong random password is generated and NOT returned. Email defaults to <slug>@thedisneyscoop.com if not supplied. Returns id, name, slug, roles.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Display name, e.g. 'Olivia Reyes'" },
+        username: { type: "string", description: "Login username; defaults to first name, lowercased" },
+        slug: { type: "string", description: "Author URL slug; defaults to username" },
+        email: { type: "string", description: "Email; defaults to <slug>@thedisneyscoop.com" },
+        role: { type: "string", default: "superauthor", description: "superauthor | author | contributor | editor | subscriber" },
+        first_name: { type: "string" },
+        last_name: { type: "string" },
+        description: { type: "string", description: "Author bio shown on the author page" },
+        url: { type: "string", description: "Author website URL" },
+      },
+      required: ["name"],
+    },
+  },
+  {
+    name: "scoop_update_user",
+    description: "Update an existing user by ID. Only supplied fields change: name, slug, email, role, first_name, last_name, description (bio), url. Use for writer bios and role changes.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        user_id: { type: "number" },
+        name: { type: "string" },
+        slug: { type: "string" },
+        email: { type: "string" },
+        role: { type: "string" },
+        first_name: { type: "string" },
+        last_name: { type: "string" },
+        description: { type: "string" },
+        url: { type: "string" },
+      },
+      required: ["user_id"],
+    },
+  },
+  {
+    name: "scoop_delete_user",
+    description: "PERMANENTLY delete a user by ID, reassigning their posts to reassign_to (defaults to 1, the Disney Scoop admin). Confirm with the user first. Never delete real staff accounts.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        user_id: { type: "number" },
+        reassign_to: { type: "number", default: 1, description: "User ID that receives the deleted user's posts" },
+      },
+      required: ["user_id"],
+    },
+  },
+  {
     name: "scoop_snippets",
     description: "Manage Code Snippets plugin snippets on TheDisneyScoop.com. action=list returns id, name, active, scope (search filters by name OR code substring). get returns full code. create needs name + code (PHP without the opening <?php tag); scope defaults to global. update changes only supplied fields. activate / deactivate toggle. delete removes the snippet PERMANENTLY: confirm with the user first.",
     inputSchema: {
@@ -438,6 +489,35 @@ async function runTool(name, a) {
         registered: u.registered_date,
       }));
     }
+    case "scoop_create_user": {
+      if (!a.name) throw new Error("name is required");
+      const first = String(a.name).trim().split(/\s+/)[0];
+      const username = (a.username || first).toLowerCase().replace(/[^a-z0-9._-]/g, "");
+      const slug = (a.slug || username).toLowerCase().replace(/[^a-z0-9-]/g, "-");
+      const email = a.email || (slug + "@thedisneyscoop.com");
+      const { randomBytes } = await import("node:crypto");
+      const password = randomBytes(24).toString("base64url");
+      const body = { username, name: a.name, slug, email, password, roles: [a.role || "superauthor"] };
+      if (a.first_name) body.first_name = a.first_name;
+      if (a.last_name) body.last_name = a.last_name;
+      if (a.description) body.description = a.description;
+      if (a.url) body.url = a.url;
+      const u = await wp("POST", "/users", body);
+      return { id: u.id, name: u.name, slug: u.slug, username: u.username, email: u.email, roles: u.roles, author_url: u.link, note: "Password generated and discarded; reset in wp-admin if a login is ever needed." };
+    }
+    case "scoop_update_user": {
+      const body = {};
+      for (const k of ["name", "slug", "email", "first_name", "last_name", "description", "url"]) if (a[k] !== undefined) body[k] = a[k];
+      if (a.role) body.roles = [a.role];
+      const u = await wp("POST", "/users/" + a.user_id, body);
+      return { id: u.id, name: u.name, slug: u.slug, roles: u.roles, description: u.description, updated_fields: Object.keys(body) };
+    }
+    case "scoop_delete_user": {
+      const reassign = a.reassign_to || 1;
+      const before = await wp("GET", "/users/" + a.user_id + "?context=edit");
+      const out = await wp("DELETE", "/users/" + a.user_id + "?force=true&reassign=" + reassign);
+      return { deleted: !!out.deleted, id: before.id, name: before.name, posts_reassigned_to: reassign };
+    }
     case "scoop_snippets": {
       const base = "/code-snippets/v1/snippets";
       const pick = (sn) => ({ id: sn.id, name: sn.name, active: sn.active, scope: sn.scope, modified: sn.modified });
@@ -514,7 +594,7 @@ async function handleMessage(msg) {
     return rpcResult(id, {
       protocolVersion: (params && params.protocolVersion) || "2025-03-26",
       capabilities: { tools: {} },
-      serverInfo: { name: "scoop-mcp", version: "2.7.0" },
+      serverInfo: { name: "scoop-mcp", version: "2.8.0" },
     });
   }
   if (method === "notifications/initialized" || (method && method.startsWith("notifications/"))) {
